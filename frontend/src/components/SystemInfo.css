@@ -1,0 +1,148 @@
+.system-info {
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.sysinfo-loading, .sysinfo-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--sc-text-muted);
+  font-size: 14px;
+}
+
+.sysinfo-error {
+  color: var(--sc-danger);
+}
+
+.sysinfo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.sysinfo-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--sc-text-primary);
+}
+
+.sysinfo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.sysinfo-card {
+  padding: 20px;
+}
+
+.sysinfo-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.sysinfo-card-icon {
+  font-size: 18px;
+}
+
+.sysinfo-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sc-text-primary);
+}
+
+.sysinfo-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sysinfo-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.sysinfo-label {
+  font-size: 12px;
+  color: var(--sc-text-muted);
+  flex-shrink: 0;
+}
+
+.sysinfo-value {
+  font-size: 13px;
+  color: var(--sc-text-secondary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysinfo-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+/* Gauge bars */
+.sysinfo-gauge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sysinfo-gauge-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--sc-bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.sysinfo-gauge-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.sysinfo-gauge-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sc-text-secondary);
+  min-width: 36px;
+  text-align: right;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Disk entries */
+.sysinfo-disk {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sysinfo-disk:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.sysinfo-disk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sysinfo-disk-meta {
+  font-size: 11px;
+  color: var(--sc-text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}

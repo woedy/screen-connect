@@ -1,0 +1,52 @@
+.session-card {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.session-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.session-card-id code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: var(--sc-text-secondary);
+  background: var(--sc-bg-primary);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.session-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.session-card-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meta-label {
+  font-size: 11px;
+  color: var(--sc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.meta-value {
+  font-size: 13px;
+  color: var(--sc-text-secondary);
+}
+
+.session-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

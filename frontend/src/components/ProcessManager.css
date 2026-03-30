@@ -1,0 +1,138 @@
+.process-manager {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Toolbar */
+.pm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--sc-border);
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.pm-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pm-search {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--sc-text-primary);
+  background: var(--sc-bg-primary);
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-sm);
+  outline: none;
+  width: 220px;
+  transition: border-color var(--sc-transition);
+}
+
+.pm-search:focus {
+  border-color: var(--sc-accent);
+}
+
+.pm-count {
+  font-size: 12px;
+  color: var(--sc-text-muted);
+}
+
+/* Table */
+.pm-table-container {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.pm-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--sc-text-muted);
+}
+
+.pm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pm-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.pm-table th {
+  text-align: left;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--sc-bg-secondary);
+  border-bottom: 1px solid var(--sc-border);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--sc-transition);
+}
+
+.pm-table th:hover {
+  color: var(--sc-text-secondary);
+}
+
+.pm-row {
+  transition: background var(--sc-transition);
+}
+
+.pm-row:hover {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.pm-row td {
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.3);
+  color: var(--sc-text-secondary);
+}
+
+.pm-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.pm-col-pid { width: 70px; }
+.pm-col-name { min-width: 180px; }
+.pm-col-cpu { width: 140px; }
+.pm-col-mem { width: 100px; }
+.pm-col-user { width: 120px; font-size: 12px; color: var(--sc-text-muted); }
+.pm-col-actions { width: 80px; text-align: right; }
+
+/* CPU bar inline */
+.pm-col-cpu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pm-cpu-bar {
+  width: 60px;
+  height: 4px;
+  background: var(--sc-bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pm-cpu-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}

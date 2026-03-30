@@ -1,0 +1,44 @@
+.screen-canvas-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: var(--sc-radius);
+  overflow: hidden;
+}
+
+.screen-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  cursor: default;
+  outline: none;
+  image-rendering: auto;
+}
+
+.screen-canvas:focus {
+  box-shadow: inset 0 0 0 2px var(--sc-accent-glow);
+}
+
+.screen-canvas-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.overlay-stat {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: var(--sc-text-secondary);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
