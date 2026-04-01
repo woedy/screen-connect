@@ -173,6 +173,13 @@ export default function SessionPage() {
       const timer = setTimeout(() => {
         sendMessage({ type: 'bandwidth_mode', enabled: lowBandwidth })
         sendMessage({ type: 'streaming_toggle', enabled: streamingEnabled })
+        
+        // Sync privacy screen state if it was persisted
+        const sessionId = window.location.pathname.split('/').pop()
+        const isPrivacyActive = localStorage.getItem(`sc_privacy_${sessionId}`) === 'true'
+        if (isPrivacyActive) {
+          sendMessage({ type: 'privacy_screen', enabled: true })
+        }
       }, 500)
       return () => clearTimeout(timer)
     }

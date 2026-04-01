@@ -89,6 +89,22 @@
     border-color: #a5b4fc;
 }
 
+/* Privacy Card */
+.active-privacy {
+    border-color: #8b5cf6;
+    background: #5b21b622;
+    box-shadow: 0 0 15px rgba(139, 92, 246, 0.2);
+}
+
+.active-privacy .action-icon {
+    background: #8b5cf6;
+    color: white;
+}
+
+.active-privacy h4 {
+    color: #c4b5fd;
+}
+
 /* Controls row */
 .controls-row {
     display: flex;

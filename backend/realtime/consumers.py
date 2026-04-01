@@ -32,7 +32,7 @@ AGENT_TO_CLIENT_TYPES = {
     # Bandwidth controls
     "bandwidth_mode", "streaming_toggle",
     # System actions & Camera
-    "system_action", "camera_snapshot_request",
+    "system_action", "camera_snapshot_request", "privacy_screen",
 }
 
 # Message types routed from client → agent

