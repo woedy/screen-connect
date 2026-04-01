@@ -9,7 +9,8 @@ import ProcessManager from '../components/ProcessManager'
 import ClipboardSync from '../components/ClipboardSync'
 import './SessionPage.css'
 
-const WS_BASE = import.meta.env.VITE_WS_BASE_URL || `ws://${window.location.host}`
+const DEFAULT_WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+const WS_BASE = import.meta.env.VITE_WS_BASE_URL || DEFAULT_WS_BASE
 
 const TABS = [
   { id: 'screen', label: '🖥 Screen', icon: 'screen' },
