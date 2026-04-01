@@ -1,0 +1,162 @@
+.actions-manager {
+    padding: 20px;
+}
+
+.actions-section {
+    margin-bottom: 30px;
+}
+
+.section-title {
+    font-size: 1.2rem;
+    color: #a5b4fc;
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1e293b;
+}
+
+.actions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+}
+
+.action-card {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 15px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.action-card:hover {
+    background: #1e293b;
+    border-color: #334155;
+    transform: translateY(-2px);
+}
+
+.action-icon {
+    font-size: 1.8rem;
+    min-width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1e293b;
+    border-radius: 10px;
+}
+
+.action-info h4 {
+    margin: 0;
+    font-size: 1rem;
+    color: #e2e8f0;
+}
+
+.action-info p {
+    margin: 4px 0 0;
+    font-size: 0.85rem;
+    color: #94a3b8;
+}
+
+/* Danger actions */
+.danger-card:hover {
+    border-color: #ef4444;
+    background: #450a0a22;
+}
+
+.danger-card.confirming {
+    background: #ef4444;
+    border-color: #f87171;
+}
+
+.danger-card.confirming .action-info h4,
+.danger-card.confirming .action-info p {
+    color: white;
+}
+
+/* Camera Card */
+.camera-card {
+    border: 1px dashed #334155;
+    background: #0f172a22;
+}
+
+.camera-card:hover {
+    border-style: solid;
+    border-color: #a5b4fc;
+}
+
+/* Controls row */
+.controls-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.control-label {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.btn-group {
+    display: flex;
+    gap: 5px;
+    background: #0f172a;
+    padding: 5px;
+    border-radius: 10px;
+    border: 1px solid #1e293b;
+}
+
+.btn-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    transition: background 0.2s;
+}
+
+.btn-icon:hover {
+    background: #1e293b;
+}
+
+.action-error {
+    margin-top: 10px;
+    color: #ef4444;
+    font-size: 0.85rem;
+    padding: 8px;
+    background: #450a0a22;
+    border-radius: 8px;
+}
+
+/* Loader */
+.loader-small {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #a5b4fc;
+    border-bottom-color: transparent;
+    border-radius: 50%;
+    animation: rotation 1s linear infinite;
+    margin-left: auto;
+}
+
+@keyframes rotation {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

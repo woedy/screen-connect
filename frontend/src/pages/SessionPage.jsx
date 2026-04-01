@@ -7,6 +7,7 @@ import RemoteTerminal from '../components/RemoteTerminal'
 import SystemInfo from '../components/SystemInfo'
 import ProcessManager from '../components/ProcessManager'
 import ClipboardSync from '../components/ClipboardSync'
+import ActionsManager from '../components/ActionsManager'
 import './SessionPage.css'
 
 const DEFAULT_WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
@@ -19,6 +20,7 @@ const TABS = [
   { id: 'system', label: '⚙ System', icon: 'system' },
   { id: 'processes', label: '📊 Processes', icon: 'processes' },
   { id: 'clipboard', label: '📋 Clipboard', icon: 'clipboard' },
+  { id: 'actions', label: '🛠 Actions', icon: 'actions' },
 ]
 
 export default function SessionPage() {
@@ -38,6 +40,9 @@ export default function SessionPage() {
   const [streamingEnabled, setStreamingEnabled] = useState(() => {
     return localStorage.getItem(`sc_stream_en_${sessionId}`) !== 'false'
   })
+  
+  const [cameraSnapshot, setCameraSnapshot] = useState(null)
+  const [showCameraModal, setShowCameraModal] = useState(false)
 
   // Retrieve auth token
   const token = localStorage.getItem('access_token')
@@ -90,6 +95,15 @@ export default function SessionPage() {
       const chunkData = uint8.subarray(37) // Zero-copy view
       // Forward to FileManager via global handler
       window.__fileManagerChunkHandler?.(transferId, chunkData)
+    }
+
+    if (msgType === 0x03) {
+      // Camera snapshot: [type(1)] [timestamp(8)] [jpeg...]
+      const jpegData = uint8.subarray(9) // Header is 9 bytes for Camera Snap
+      const blob = new Blob([jpegData], { type: 'image/jpeg' })
+      const url = URL.createObjectURL(blob)
+      setCameraSnapshot(url)
+      setShowCameraModal(true)
     }
   }, [])
 
@@ -163,6 +177,13 @@ export default function SessionPage() {
       return () => clearTimeout(timer)
     }
   }, [isConnected, lowBandwidth, streamingEnabled, sendMessage])
+
+  useEffect(() => {
+    // Cleanup blob URL when modal closes or component unmounts
+    return () => {
+      if (cameraSnapshot) URL.revokeObjectURL(cameraSnapshot)
+    }
+  }, [cameraSnapshot])
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement)
@@ -297,7 +318,36 @@ export default function SessionPage() {
         {activeTab === 'clipboard' && (
           <ClipboardSync sendMessage={sendMessage} lastMessage={lastMessage} />
         )}
+
+        {activeTab === 'actions' && (
+          <ActionsManager sendMessage={sendMessage} lastMessage={lastMessage} />
+        )}
       </div>
+
+      {/* Camera Snapshot Modal */}
+      {showCameraModal && (
+        <div className="camera-modal-overlay fade-in" onClick={() => setShowCameraModal(false)}>
+          <div className="camera-modal-card glass-card" onClick={e => e.stopPropagation()}>
+            <div className="camera-modal-header">
+              <h3>📸 Remote Camera Snapshot</h3>
+              <button className="btn-close" onClick={() => setShowCameraModal(false)}>×</button>
+            </div>
+            <div className="camera-modal-body">
+              {cameraSnapshot ? (
+                <img src={cameraSnapshot} alt="Remote Snapshot" className="snapshot-img" />
+              ) : (
+                <div className="snapshot-placeholder">Loading snapshot...</div>
+              )}
+            </div>
+            <div className="camera-modal-footer">
+              <button className="btn btn-primary" onClick={() => setShowCameraModal(false)}>Close</button>
+              <a href={cameraSnapshot} download={`snapshot_${Date.now()}.jpg`} className="btn btn-secondary">
+                💾 Download
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

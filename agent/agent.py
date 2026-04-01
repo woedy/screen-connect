@@ -64,6 +64,7 @@ logger = logging.getLogger("ScreenConnectAgent")
 # Binary message types
 MSG_TYPE_FRAME = 0x01
 MSG_TYPE_FILE_CHUNK = 0x02
+MSG_TYPE_CAMERA_SNAP = 0x03
 
 # Dangerous commands blocklist
 BLOCKED_COMMANDS = {
@@ -246,6 +247,10 @@ class ScreenConnectAgent:
                 self._handle_bandwidth_mode(data)
             elif msg_type == "streaming_toggle":
                 self._handle_streaming_toggle(data)
+            elif msg_type == "system_action":
+                self._handle_system_action(data)
+            elif msg_type == "camera_snapshot_request":
+                self._handle_camera_snapshot(data)
 
         except json.JSONDecodeError:
             pass
@@ -447,6 +452,95 @@ class ScreenConnectAgent:
                               button=d.get("button", "left"))
         except Exception as e:
             logger.error(f"Mouse up error: {e}")
+
+    # -- System Actions & Camera -----------------------------------------------
+
+    def _handle_system_action(self, d):
+        """Execute a system-level action (Windows focus)."""
+        action = d.get("action")
+        logger.info(f"System action requested: {action}")
+
+        try:
+            if action == "lock":
+                os.system("rundll32.exe user32.dll,LockWorkStation")
+            elif action == "logout":
+                os.system("shutdown /l")
+            elif action == "restart":
+                os.system("shutdown /r /t 0")
+            elif action == "shutdown":
+                os.system("shutdown /s /t 0")
+            elif action == "sleep":
+                # Uses PowerShell to call SetSuspendState
+                cmd = "powershell.exe -Command \"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)\""
+                subprocess.Popen(cmd, shell=True)
+            elif action == "mute":
+                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]173)\"")
+            elif action == "vol_up":
+                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]175)\"")
+            elif action == "vol_down":
+                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]174)\"")
+            elif action == "empty_recycle_bin":
+                os.system("powershell.exe -Command \"Clear-RecycleBin -Confirm:$false\"")
+            elif action == "show_desktop":
+                os.system("powershell.exe -Command \"(New-Object -ComObject shell.application).toggleDesktop()\"")
+            elif action == "monitor_off":
+                # SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
+                cmd = "powershell.exe -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")]public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -PassThru)::SendMessage(0xffff, 0x0112, 0xf170, 2)\""
+                subprocess.Popen(cmd, shell=True)
+            elif action == "brightness_up":
+                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10; if($b -gt 100){$b=100}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+            elif action == "brightness_down":
+                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10; if($b -lt 0){$b=0}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+        except Exception as e:
+            logger.error(f"System action failed ({action}): {e}")
+
+    def _handle_camera_snapshot(self, d):
+        """Capture a snapshot from the webcam and relay it."""
+        def _snap_thread():
+            cap = None
+            try:
+                # Try indices 0, 1, 2 to find a camera
+                for i in range(3):
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        break
+                    cap.release()
+                    cap = None
+                
+                if not cap:
+                    self._send_json({"type": "camera_snapshot_response", "success": False, "error": "No camera found"})
+                    return
+
+                # Warm up the camera (skip first few frames for auto-exposure)
+                for _ in range(5):
+                    cap.read()
+                
+                ret, frame = cap.read()
+                if ret:
+                    # Resize to reasonable viewing size
+                    h, w = frame.shape[:2]
+                    if w > 1280:
+                        s = 1280 / w
+                        frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    
+                    # Binary: [type(1)] [timestamp(8)] [jpeg...]
+                    header = struct.pack(">Bd", MSG_TYPE_CAMERA_SNAP, time.time())
+                    self._send_binary(header + buf.tobytes())
+                    
+                    self._send_json({"type": "camera_snapshot_response", "success": True})
+                else:
+                    self._send_json({"type": "camera_snapshot_response", "success": False, "error": "Failed to grab frame"})
+            
+            except Exception as e:
+                logger.error(f"Camera error: {e}")
+                self._send_json({"type": "camera_snapshot_response", "success": False, "error": str(e)})
+            finally:
+                if cap:
+                    cap.release()
+
+        threading.Thread(target=_snap_thread, daemon=True).start()
 
     def _handle_key_press(self, d):
         try:

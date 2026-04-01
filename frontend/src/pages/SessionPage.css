@@ -195,3 +195,86 @@
   color: var(--sc-text-muted);
   font-size: 14px;
 }
+
+/* Camera Modal */
+.camera-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.camera-modal-card {
+  width: 100%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-color: rgba(165, 180, 252, 0.2);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.camera-modal-header {
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--sc-border);
+}
+
+.camera-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sc-text-primary);
+}
+
+.camera-modal-body {
+  flex: 1;
+  overflow: auto;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+}
+
+.snapshot-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.snapshot-placeholder {
+  color: var(--sc-text-muted);
+  font-size: 14px;
+}
+
+.camera-modal-footer {
+  padding: 16px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  background: rgba(9, 9, 11, 0.5);
+  border-top: 1px solid var(--sc-border);
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--sc-text-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.btn-close:hover {
+  color: var(--sc-text-primary);
+}
