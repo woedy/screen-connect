@@ -136,6 +136,9 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     restart: unless-stopped
 
+    healthcheck:
+      disable: true
+
     ports:
       - "3000:80"
 
