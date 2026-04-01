@@ -67,6 +67,11 @@ logger = logging.getLogger("ScreenConnectAgent")
 MSG_TYPE_FRAME = 0x01
 MSG_TYPE_FILE_CHUNK = 0x02
 MSG_TYPE_CAMERA_SNAP = 0x03
+MSG_TYPE_TILE = 0x04
+
+# Compression settings
+TILE_SIZE = 128
+KEYFRAME_INTERVAL = 5.0 # Full refresh every 5 seconds
 
 # Dangerous commands blocklist
 BLOCKED_COMMANDS = {
@@ -196,6 +201,7 @@ class ScreenConnectAgent:
         self.capture_thread = None
         self.last_frame_crc = None
         self.last_block_hashes = {}  # (row, col) -> hash
+        self.last_keyframe_time = 0
         self._send_lock = threading.Lock()
         self._last_send_time = 0
 
@@ -405,6 +411,7 @@ class ScreenConnectAgent:
     def _capture_loop(self):
         interval = 1.0 / self.fps
         logger.info(f"Capturing at {self.fps} FPS (adaptive quality {self.min_quality}-{self.max_quality})")
+        logger.info(f"Spatial Tiling enabled: {TILE_SIZE}px tiles")
         current_quality = self.quality
         consecutive_slow = 0
 
@@ -417,90 +424,78 @@ class ScreenConnectAgent:
 
                     t0 = time.time()
                     try:
-                        # 1. Congestion awareness: skip if we sent a frame very recently 
-                        # and it was a large one (indicates slow network or high CPU)
+                        # 1. Congestion awareness
                         if t0 - self._last_send_time < (interval * 0.8):
                             time.sleep(0.01)
                             continue
 
-                        # Sync with privacy screen: briefly hide to capture real desktop
+                        # Sync with privacy screen
                         if self.privacy_active and self.privacy_overlay:
                             self.privacy_overlay.hide()
-                            # Tiny sleep to ensure window is out of the OS frame buffer
                             time.sleep(0.005)
 
                         shot = sct.grab(sct.monitors[0])
                         
-                        # Show privacy screen back immediately
                         if self.privacy_active and self.privacy_overlay:
                             self.privacy_overlay.show()
 
-                        # Use raw pixels for faster hashing
                         frame_raw = np.array(shot)
-                        
-                        # 2. Block-based change detection (faster than full-thumbnail CRC)
-                        # Divide screen into 4x4 blocks and check for changes
                         h_raw, w_raw = frame_raw.shape[:2]
                         
-                        # Reset block hashes if resolution changes
-                        if not hasattr(self, '_last_raw_dim') or self._last_raw_dim != (w_raw, h_raw):
-                            self.last_block_hashes = {}
-                            self._last_raw_dim = (w_raw, h_raw)
+                        # Resize if needed for processing consistency
+                        if w_raw > self.max_width:
+                            s = self.max_width / w_raw
+                            frame_raw = cv2.resize(frame_raw, (int(w_raw * s), int(h_raw * s)), interpolation=cv2.INTER_LINEAR)
+                            h_raw, w_raw = frame_raw.shape[:2]
 
-                        rows, cols = 4, 4
-                        bw, bh = w_raw // cols, h_raw // rows
-                        changed = False
-                        
-                        for r in range(rows):
-                            for c in range(cols):
-                                block = frame_raw[r * bh : (r + 1) * bh, c * bw : (c + 1) * bw]
-                                # Fast hash using sum + xor of a subset of pixels
-                                b_hash = zlib.adler32(block[::4, ::4].tobytes())
-                                if self.last_block_hashes.get((r, c)) != b_hash:
-                                    self.last_block_hashes[(r, c)] = b_hash
-                                    changed = True
-                        
-                        if not changed and self.last_frame_crc is not None:
-                            # Static frame — reset quality upward
-                            if current_quality < self.max_quality:
-                                current_quality = min(current_quality + 5, self.max_quality)
-                            time.sleep(max(0, interval - (time.time() - t0)))
-                            continue
-                        self.last_frame_crc = 1 # Mark as not-initial
-
-                        # 3. Processing
                         frame = cv2.cvtColor(frame_raw, cv2.COLOR_BGRA2BGR)
-                        h, w = frame.shape[:2]
-                        if w > self.max_width:
-                            s = self.max_width / w
-                            frame = cv2.resize(
-                                frame, (int(w * s), int(h * s)),
-                                interpolation=cv2.INTER_LINEAR)
-
-                        # 4. Optimized JPEG Encoding
-                        # IMWRITE_JPEG_OPTIMIZE: 10-15% smaller files for same quality
-                        encode_param = [
-                            cv2.IMWRITE_JPEG_QUALITY, current_quality,
-                            cv2.IMWRITE_JPEG_OPTIMIZE, 1
-                        ]
-                        _, buf = cv2.imencode(".jpg", frame, encode_param)
-
-                        # Send as binary: [type(1)] [width(2)] [height(2)] [timestamp(8)] [jpeg...]
-                        fh, fw = frame.shape[:2]
-                        header = struct.pack(
-                            ">BHHd",
-                            MSG_TYPE_FRAME,
-                            fw, fh,
-                            time.time()
-                        )
-                        self._send_binary(header + buf.tobytes())
-                        self._last_send_time = time.time()
+                        
+                        # 2. Keyframe logic (Full Refresh)
+                        force_keyframe = (t0 - self.last_keyframe_time > KEYFRAME_INTERVAL)
+                        
+                        if force_keyframe or self.last_frame_crc is None:
+                            # Send full frame
+                            encode_param = [cv2.IMWRITE_JPEG_QUALITY, current_quality, cv2.IMWRITE_JPEG_OPTIMIZE, 1]
+                            _, buf = cv2.imencode(".jpg", frame, encode_param)
+                            
+                            header = struct.pack(">BHHd", MSG_TYPE_FRAME, w_raw, h_raw, t0)
+                            self._send_binary(header + buf.tobytes())
+                            self.last_keyframe_time = t0
+                            self.last_frame_crc = 1
+                            self.last_block_hashes = {} # Reset tile hashes
+                            # Log keyframe occasionally
+                            # logger.debug("Sent keyframe")
+                        else:
+                            # 3. Tiled Delta logic
+                            tiles_sent = 0
+                            for y in range(0, h_raw, TILE_SIZE):
+                                for x in range(0, w_raw, TILE_SIZE):
+                                    # Handle edge tiles
+                                    tw = min(TILE_SIZE, w_raw - x)
+                                    th = min(TILE_SIZE, h_raw - y)
+                                    
+                                    tile = frame[y:y+th, x:x+tw]
+                                    # Fast hash
+                                    t_hash = zlib.adler32(tile[::4, ::4].tobytes())
+                                    
+                                    if self.last_block_hashes.get((x, y)) != t_hash:
+                                        self.last_block_hashes[(x, y)] = t_hash
+                                        
+                                        # Encode and send this tile
+                                        _, buf = cv2.imencode(".jpg", tile, [cv2.IMWRITE_JPEG_QUALITY, current_quality])
+                                        
+                                        # Tile header: [type(1)] [w(2)] [h(2)] [x(2)] [y(2)] [ts(8)]
+                                        header = struct.pack(">BHHHHd", MSG_TYPE_TILE, tw, th, x, y, t0)
+                                        self._send_binary(header + buf.tobytes())
+                                        tiles_sent += 1
+                            
+                            if tiles_sent > 0:
+                                self._last_send_time = time.time()
 
                     except Exception as e:
                         logger.error(f"Capture error: {e}")
 
                     elapsed = time.time() - t0
-
                     # Adaptive quality
                     if elapsed > interval * 1.2:
                         consecutive_slow += 1

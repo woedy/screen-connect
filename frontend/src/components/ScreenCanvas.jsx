@@ -60,7 +60,6 @@ const ScreenCanvas = forwardRef(function ScreenCanvas({ onMouseEvent, onKeyEvent
     return () => cancelAnimationFrame(rafIdRef.current)
   }, [renderLoop])
 
-  // Draw frame from binary data — called by parent via ref
   const drawFrame = useCallback((jpegArrayBuffer, width, height) => {
     if (width && height && (remoteSize.width !== width || remoteSize.height !== height)) {
       setRemoteSize({ width, height })
@@ -78,10 +77,27 @@ const ScreenCanvas = forwardRef(function ScreenCanvas({ onMouseEvent, onKeyEvent
     })
   }, [remoteSize])
 
+  // Draw a tile/delta from binary data
+  const drawTile = useCallback((jpegArrayBuffer, x, y, width, height) => {
+    const blob = new Blob([jpegArrayBuffer], { type: 'image/jpeg' })
+    createImageBitmap(blob, { colorSpaceConversion: 'none' }).then((bitmap) => {
+      const canvas = canvasRef.current
+      if (canvas) {
+        const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
+        // Draw tile directly to context
+        ctx.drawImage(bitmap, x, y, width, height)
+        frameCountRef.current++
+        bitmap.close()
+      }
+    }).catch(() => {
+    })
+  }, [])
+
   // Expose drawFrame to parent via ref
   useImperativeHandle(ref, () => ({
     drawFrame,
-  }), [drawFrame])
+    drawTile,
+  }), [drawFrame, drawTile])
 
   // Map canvas coordinates to remote screen coordinates
   const mapCoordinates = useCallback((e) => {

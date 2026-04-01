@@ -88,6 +88,17 @@ export default function SessionPage() {
       canvasRef.current?.drawFrame(jpegData, width, height)
     }
 
+    if (msgType === 0x04) {
+      // Tile: [type(1)] [w(2)] [h(2)] [x(2)] [y(2)] [ts(8)] [jpeg...]
+      const dv = new DataView(arrayBuffer)
+      const w = dv.getUint16(1)
+      const h = dv.getUint16(3)
+      const x = dv.getUint16(5)
+      const y = dv.getUint16(7)
+      const jpegData = uint8.subarray(17)
+      canvasRef.current?.drawTile(jpegData, x, y, w, h)
+    }
+
     if (msgType === 0x02) {
       // File chunk: [type(1)] [transfer_id(36)] [data...]
       const decoder = new TextDecoder()
