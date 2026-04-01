@@ -28,6 +28,8 @@ export default function useWebSocket(url, options = {}) {
   const wsRef = useRef(null)
   const reconnectTimerRef = useRef(null)
   const manualCloseRef = useRef(false)
+  const reconnectAttemptsRef = useRef(0)
+  const connectRef = useRef(null)
 
   // Store callbacks in refs to avoid reconnection on callback change
   const onMessageRef = useRef(onMessage)
@@ -56,6 +58,7 @@ export default function useWebSocket(url, options = {}) {
 
     ws.onopen = (e) => {
       setReadyState(WebSocket.OPEN)
+      reconnectAttemptsRef.current = 0
       onOpenRef.current?.(e)
     }
 
@@ -84,12 +87,22 @@ export default function useWebSocket(url, options = {}) {
 
       // Auto-reconnect unless manually closed
       if (autoReconnect && !manualCloseRef.current) {
+        if (!url) return
+        const attempt = reconnectAttemptsRef.current
+        const jitter = Math.random() * 300
+        const delay = Math.min(reconnectInterval * (2 ** attempt), 15000) + jitter
+        reconnectAttemptsRef.current = attempt + 1
+        clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = setTimeout(() => {
-          connect()
-        }, reconnectInterval)
+          connectRef.current?.()
+        }, delay)
       }
     }
   }, [url, autoReconnect, reconnectInterval])
+
+  useEffect(() => {
+    connectRef.current = connect
+  }, [connect])
 
   const sendMessage = useCallback((data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -106,6 +119,7 @@ export default function useWebSocket(url, options = {}) {
 
   const disconnect = useCallback(() => {
     manualCloseRef.current = true
+    reconnectAttemptsRef.current = 0
     clearTimeout(reconnectTimerRef.current)
     wsRef.current?.close()
   }, [])
@@ -118,7 +132,7 @@ export default function useWebSocket(url, options = {}) {
       clearTimeout(reconnectTimerRef.current)
       wsRef.current?.close()
     }
-  }, [url]) // Reconnect when URL changes
+  }, [url, connect]) // Reconnect when URL changes
 
   return {
     readyState,

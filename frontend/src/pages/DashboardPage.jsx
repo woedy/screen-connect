@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import api from '../api/client'
 import SessionCard from '../components/SessionCard'
 import './DashboardPage.css'
@@ -6,25 +6,109 @@ import './DashboardPage.css'
 export default function DashboardPage() {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [creating, setCreating] = useState(false)
   const [toast, setToast] = useState(null)
+  const [nextPageUrl, setNextPageUrl] = useState(null)
+  const [streamConnected, setStreamConnected] = useState(false)
+  const fetchInFlightRef = useRef(false)
 
   const fetchSessions = useCallback(async () => {
+    // Skip overlapping polls to avoid piling up pending requests.
+    if (fetchInFlightRef.current) return
+    fetchInFlightRef.current = true
     try {
       const res = await api.get('/api/sessions/list/')
-      setSessions(res.data)
+      const payload = res.data
+      const items = Array.isArray(payload) ? payload : (payload.results || [])
+      const next = Array.isArray(payload) ? null : (payload.next || null)
+      setSessions(items)
+      setNextPageUrl(next)
     } catch (err) {
       console.error('Failed to fetch sessions:', err)
     } finally {
       setLoading(false)
+      fetchInFlightRef.current = false
+    }
+  }, [])
+
+  const handleLoadMore = async () => {
+    if (!nextPageUrl || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const res = await api.get(nextPageUrl)
+      const payload = res.data
+      const items = Array.isArray(payload) ? payload : (payload.results || [])
+      const next = Array.isArray(payload) ? null : (payload.next || null)
+      setSessions((prev) => [...prev, ...items])
+      setNextPageUrl(next)
+    } catch (err) {
+      console.error('Failed to load more sessions:', err)
+      showToast('Failed to load more sessions', 'error')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  useEffect(() => {
+    const token = localStorage.getItem('access_token')
+    if (!token || typeof EventSource === 'undefined') return
+
+    const source = new EventSource(`/api/sessions/stream/?token=${encodeURIComponent(token)}`)
+    source.addEventListener('sessions', (e) => {
+      try {
+        const rows = JSON.parse(e.data)
+        if (Array.isArray(rows)) {
+          setSessions(rows)
+          setNextPageUrl(null) // Stream endpoint is a snapshot feed
+        }
+      } catch (err) {
+        console.error('Failed to parse session stream payload', err)
+      }
+    })
+    source.onopen = () => setStreamConnected(true)
+    source.onerror = () => setStreamConnected(false)
+
+    return () => {
+      source.close()
+      setStreamConnected(false)
     }
   }, [])
 
   useEffect(() => {
+    if (streamConnected) return
+    let timerId = null
+    let cancelled = false
+
+    const scheduleNext = () => {
+      if (cancelled) return
+      // Use slower cadence when tab is hidden to reduce backend load.
+      const delay = document.hidden ? 15000 : 5000
+      timerId = setTimeout(async () => {
+        await fetchSessions()
+        scheduleNext()
+      }, delay)
+    }
+
+    const onVisibilityChange = () => {
+      if (timerId) clearTimeout(timerId)
+      // Refresh immediately when returning to the tab.
+      if (!document.hidden) {
+        fetchSessions()
+      }
+      scheduleNext()
+    }
+
     fetchSessions()
-    const interval = setInterval(fetchSessions, 5000)
-    return () => clearInterval(interval)
-  }, [fetchSessions])
+    scheduleNext()
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      cancelled = true
+      if (timerId) clearTimeout(timerId)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [fetchSessions, streamConnected])
 
   const handleCreateSession = async () => {
     setCreating(true)
@@ -32,7 +116,7 @@ export default function DashboardPage() {
       const res = await api.post('/api/sessions/')
       setSessions((prev) => [res.data, ...prev])
       showToast('Session created successfully!', 'success')
-    } catch (err) {
+    } catch {
       showToast('Failed to create session', 'error')
     } finally {
       setCreating(false)
@@ -46,7 +130,7 @@ export default function DashboardPage() {
         prev.map((s) => (s.id === sessionId ? { ...s, status: 'ended' } : s))
       )
       showToast('Session ended', 'success')
-    } catch (err) {
+    } catch {
       showToast('Failed to end session', 'error')
     }
   }
@@ -162,6 +246,18 @@ export default function DashboardPage() {
               ))}
             </div>
           </section>
+        )}
+
+        {nextPageUrl && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+            <button
+              className="btn btn-secondary"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? 'Loading...' : 'Load More'}
+            </button>
+          </div>
         )}
       </div>
 

@@ -12,6 +12,7 @@ import './SessionPage.css'
 
 const DEFAULT_WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
 const WS_BASE = import.meta.env.VITE_WS_BASE_URL || DEFAULT_WS_BASE
+const PROTOCOL_VERSION = 1
 
 const TABS = [
   { id: 'screen', label: '🖥 Screen', icon: 'screen' },
@@ -30,7 +31,6 @@ export default function SessionPage() {
 
   const [activeTab, setActiveTab] = useState('screen')
   const [clientConnected, setClientConnected] = useState(false)
-  const [agentConnected, setAgentConnected] = useState(false)
   const [sessionEnded, setSessionEnded] = useState(false)
   const [lastMessage, setLastMessage] = useState(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -42,6 +42,7 @@ export default function SessionPage() {
   })
   
   const [cameraSnapshot, setCameraSnapshot] = useState(null)
+  const [cameraSnapshotName, setCameraSnapshotName] = useState('snapshot.jpg')
   const [showCameraModal, setShowCameraModal] = useState(false)
 
   // Retrieve auth token
@@ -114,37 +115,34 @@ export default function SessionPage() {
       const blob = new Blob([jpegData], { type: 'image/jpeg' })
       const url = URL.createObjectURL(blob)
       setCameraSnapshot(url)
+      setCameraSnapshotName(`snapshot_${Math.floor(Date.now() / 1000)}.jpg`)
       setShowCameraModal(true)
     }
   }, [])
 
-  const { sendMessage, isConnected, disconnect } = useWebSocket(wsUrl, {
+  const { sendMessage, sendBinary, isConnected, disconnect } = useWebSocket(wsUrl, {
     onMessage: handleMessage,
     onBinaryMessage: handleBinaryMessage,
   })
 
-  useEffect(() => {
-    if (isConnected) {
-      setAgentConnected(true)
-    } else {
-      setAgentConnected(false)
-    }
-  }, [isConnected])
+  const sendProtocolMessage = useCallback((payload) => {
+    sendMessage({ v: PROTOCOL_VERSION, ...payload })
+  }, [sendMessage])
 
   const handleMouseEvent = useCallback((type, data) => {
-    sendMessage({ type, ...data })
-  }, [sendMessage])
+    sendProtocolMessage({ type, ...data })
+  }, [sendProtocolMessage])
 
   const handleKeyEvent = useCallback((data) => {
-    sendMessage({ type: 'key_press', ...data })
-  }, [sendMessage])
+    sendProtocolMessage({ type: 'key_press', ...data })
+  }, [sendProtocolMessage])
 
   const handleScrollEvent = useCallback((data) => {
-    sendMessage({ type: 'scroll', ...data })
-  }, [sendMessage])
+    sendProtocolMessage({ type: 'scroll', ...data })
+  }, [sendProtocolMessage])
 
   const handleEndSession = () => {
-    sendMessage({ type: 'session_end' })
+    sendProtocolMessage({ type: 'session_end' })
   }
 
   const handleBack = () => {
@@ -167,18 +165,18 @@ export default function SessionPage() {
     const newVal = !lowBandwidth
     setLowBandwidth(newVal)
     localStorage.setItem(`sc_low_bw_${sessionId}`, newVal)
-    sendMessage({ type: 'bandwidth_mode', enabled: newVal })
+    sendProtocolMessage({ type: 'bandwidth_mode', enabled: newVal })
   }
 
   const toggleStreaming = () => {
     const newVal = !streamingEnabled
     setStreamingEnabled(newVal)
     localStorage.setItem(`sc_stream_en_${sessionId}`, newVal)
-    sendMessage({ type: 'streaming_toggle', enabled: newVal })
+    sendProtocolMessage({ type: 'streaming_toggle', enabled: newVal })
   }
 
   const handleRequestKeyframe = () => {
-    sendMessage({ type: 'request_keyframe' })
+    sendProtocolMessage({ type: 'request_keyframe' })
   }
 
   // Sync state with agent on initial connection or reconnection
@@ -186,18 +184,18 @@ export default function SessionPage() {
     if (isConnected) {
       // Small delay to ensure agent is ready for control messages
       const timer = setTimeout(() => {
-        sendMessage({ type: 'bandwidth_mode', enabled: lowBandwidth })
-        sendMessage({ type: 'streaming_toggle', enabled: streamingEnabled && activeTab === 'screen' })
+        sendProtocolMessage({ type: 'bandwidth_mode', enabled: lowBandwidth })
+        sendProtocolMessage({ type: 'streaming_toggle', enabled: streamingEnabled && activeTab === 'screen' })
         
         // Sync privacy screen state if it was persisted
         const isPrivacyActive = localStorage.getItem(`sc_privacy_${sessionId}`) === 'true'
         if (isPrivacyActive) {
-          sendMessage({ type: 'privacy_screen', enabled: true })
+          sendProtocolMessage({ type: 'privacy_screen', enabled: true })
         }
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [isConnected, lowBandwidth, streamingEnabled, sendMessage, activeTab, sessionId])
+  }, [isConnected, lowBandwidth, streamingEnabled, sendProtocolMessage, activeTab, sessionId])
 
   // Tab-Aware Auto-Pause Logic
   useEffect(() => {
@@ -205,12 +203,12 @@ export default function SessionPage() {
 
     if (activeTab !== 'screen') {
       // Pause streaming to save bandwidth for other tasks
-      sendMessage({ type: 'streaming_toggle', enabled: false })
+      sendProtocolMessage({ type: 'streaming_toggle', enabled: false })
     } else if (streamingEnabled) {
       // Resume if user expects it to be on
-      sendMessage({ type: 'streaming_toggle', enabled: true })
+      sendProtocolMessage({ type: 'streaming_toggle', enabled: true })
     }
-  }, [activeTab, isConnected, streamingEnabled, sendMessage])
+  }, [activeTab, isConnected, streamingEnabled, sendProtocolMessage])
 
   useEffect(() => {
     // Cleanup blob URL when modal closes or component unmounts
@@ -349,27 +347,27 @@ export default function SessionPage() {
         )}
 
         {activeTab === 'files' && (
-          <FileManager sendMessage={sendMessage} lastMessage={lastMessage} />
+          <FileManager sendMessage={sendProtocolMessage} sendBinary={sendBinary} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'terminal' && (
-          <RemoteTerminal sendMessage={sendMessage} lastMessage={lastMessage} />
+          <RemoteTerminal sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'system' && (
-          <SystemInfo sendMessage={sendMessage} lastMessage={lastMessage} />
+          <SystemInfo sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'processes' && (
-          <ProcessManager sendMessage={sendMessage} lastMessage={lastMessage} />
+          <ProcessManager sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'clipboard' && (
-          <ClipboardSync sendMessage={sendMessage} lastMessage={lastMessage} />
+          <ClipboardSync sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'actions' && (
-          <ActionsManager sendMessage={sendMessage} lastMessage={lastMessage} />
+          <ActionsManager sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
       </div>
 
@@ -390,7 +388,7 @@ export default function SessionPage() {
             </div>
             <div className="camera-modal-footer">
               <button className="btn btn-primary" onClick={() => setShowCameraModal(false)}>Close</button>
-              <a href={cameraSnapshot} download={`snapshot_${Date.now()}.jpg`} className="btn btn-secondary">
+              <a href={cameraSnapshot} download={cameraSnapshotName} className="btn btn-secondary">
                 💾 Download
               </a>
             </div>

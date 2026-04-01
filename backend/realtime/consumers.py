@@ -15,6 +15,8 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
+PROTOCOL_VERSION = 1
+FRAME_BINARY_TYPES = {0x01, 0x04}  # full-frame + tiled-frame
 
 # Message types routed from agent → client
 AGENT_TO_CLIENT_TYPES = {
@@ -30,7 +32,7 @@ AGENT_TO_CLIENT_TYPES = {
     "system_info_request", "process_list_request", "process_kill",
     "clipboard_get", "clipboard_set",
     # Bandwidth controls
-    "bandwidth_mode", "streaming_toggle",
+    "bandwidth_mode", "streaming_toggle", "request_keyframe",
     # System actions & Camera
     "system_action", "camera_snapshot_request", "privacy_screen",
 }
@@ -40,7 +42,8 @@ CLIENT_TO_AGENT_TYPES = {
     # Screen data
     "frame", "screen_info",
     # File management responses
-    "file_list_response", "file_download_start", "file_download_complete",
+    "file_list_response", "file_list_chunk", "file_list_complete",
+    "file_download_start", "file_download_complete",
     "file_download_error", "file_upload_ready", "file_upload_success",
     "file_upload_error", "file_delete_response",
     # Remote terminal output
@@ -73,16 +76,20 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
         self.session_id = None
         self.role = None
         self.session = None
-        self.agent_group = None
-        self.client_group = None
+        self.agent_frame_group = None
+        self.agent_control_group = None
+        self.client_frame_group = None
+        self.client_control_group = None
 
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.role = self.scope.get("role")
         self.session = self.scope.get("support_session")
 
-        self.agent_group = f"session_{self.session_id}_agent"
-        self.client_group = f"session_{self.session_id}_client"
+        self.agent_frame_group = f"session_{self.session_id}_agent_frame"
+        self.agent_control_group = f"session_{self.session_id}_agent_control"
+        self.client_frame_group = f"session_{self.session_id}_client_frame"
+        self.client_control_group = f"session_{self.session_id}_client_control"
 
         # Reject if no valid session
         if not self.session:
@@ -110,10 +117,12 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
 
         # Join the appropriate group
         if self.role == "agent":
-            await self.channel_layer.group_add(self.agent_group, self.channel_name)
+            await self.channel_layer.group_add(self.agent_frame_group, self.channel_name)
+            await self.channel_layer.group_add(self.agent_control_group, self.channel_name)
             await self._set_agent_connected(True)
         else:
-            await self.channel_layer.group_add(self.client_group, self.channel_name)
+            await self.channel_layer.group_add(self.client_frame_group, self.channel_name)
+            await self.channel_layer.group_add(self.client_control_group, self.channel_name)
             await self._set_client_connected(True)
 
         await self.accept()
@@ -142,10 +151,12 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
 
         # Leave group
         if self.role == "agent":
-            await self.channel_layer.group_discard(self.agent_group, self.channel_name)
+            await self.channel_layer.group_discard(self.agent_frame_group, self.channel_name)
+            await self.channel_layer.group_discard(self.agent_control_group, self.channel_name)
             await self._set_agent_connected(False)
         else:
-            await self.channel_layer.group_discard(self.client_group, self.channel_name)
+            await self.channel_layer.group_discard(self.client_frame_group, self.channel_name)
+            await self.channel_layer.group_discard(self.client_control_group, self.channel_name)
             await self._set_client_connected(False)
 
         # Notify the other party
@@ -156,20 +167,25 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data=None, bytes_data=None):
         """Handle incoming WebSocket messages."""
         if bytes_data:
-            # Binary data — relay directly without any parsing
+            # Binary data — route frame payloads separately from control/file payloads
+            msg_type = bytes_data[0] if len(bytes_data) > 0 else None
+            is_frame = msg_type in FRAME_BINARY_TYPES
+
             if self.role == "client":
-                # Binary from Python agent (screen frames, file chunks) → dashboard (agent_group)
+                # Python agent -> dashboard
+                target_group = self.agent_frame_group if is_frame else self.agent_control_group
                 await self.channel_layer.group_send(
-                    self.agent_group,
+                    target_group,
                     {
                         "type": "relay.binary",
                         "data": bytes_data,
                     },
                 )
             elif self.role == "agent":
-                # Binary from dashboard → Python agent (client_group)
+                # Dashboard -> Python agent
+                target_group = self.client_frame_group if is_frame else self.client_control_group
                 await self.channel_layer.group_send(
-                    self.client_group,
+                    target_group,
                     {
                         "type": "relay.binary",
                         "data": bytes_data,
@@ -185,6 +201,15 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
                 return
 
             msg_type = data.get("type")
+            msg_version = data.get("v", PROTOCOL_VERSION)
+
+            if msg_version != PROTOCOL_VERSION:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "error": f"Unsupported protocol version: {msg_version}",
+                    "supported_version": PROTOCOL_VERSION,
+                }))
+                return
 
             if msg_type == "ping":
                 await self.send(text_data=json.dumps({"type": "pong"}))
@@ -203,7 +228,7 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
         """Route messages from Python agent (role=client) → dashboard (sits in agent_group)."""
         if msg_type in CLIENT_TO_AGENT_TYPES:
             await self.channel_layer.group_send(
-                self.agent_group,
+                self.agent_control_group,
                 {
                     "type": "relay.message",
                     "message": data,
@@ -214,7 +239,7 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
         """Route messages from dashboard (role=agent) → Python agent (sits in client_group)."""
         if msg_type in AGENT_TO_CLIENT_TYPES:
             await self.channel_layer.group_send(
-                self.client_group,
+                self.client_control_group,
                 {
                     "type": "relay.message",
                     "message": data,
@@ -227,8 +252,8 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
 
         # Notify both groups
         end_msg = {"type": "relay.message", "message": {"type": "session_ended"}}
-        await self.channel_layer.group_send(self.agent_group, end_msg)
-        await self.channel_layer.group_send(self.client_group, end_msg)
+        await self.channel_layer.group_send(self.agent_control_group, end_msg)
+        await self.channel_layer.group_send(self.client_control_group, end_msg)
 
     async def _notify_connection_status(self, status):
         """Notify the other party about connection status changes."""
@@ -244,9 +269,9 @@ class ScreenShareConsumer(AsyncWebsocketConsumer):
         # Python agent (role=client) connects → notify dashboard (sits in agent_group)
         # Dashboard (role=agent) connects → notify Python agent (sits in client_group)
         if self.role == "client":
-            await self.channel_layer.group_send(self.agent_group, message)
+            await self.channel_layer.group_send(self.agent_control_group, message)
         else:
-            await self.channel_layer.group_send(self.client_group, message)
+            await self.channel_layer.group_send(self.client_control_group, message)
 
     # -------------------------------------------------------------------------
     # Channel layer event handlers

@@ -59,6 +59,10 @@ class SupportSession(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Support Session"
         verbose_name_plural = "Support Sessions"
+        indexes = [
+            models.Index(fields=["created_by", "-created_at"], name="sc_session_creator_created_idx"),
+            models.Index(fields=["status", "expires_at"], name="sc_session_status_exp_idx"),
+        ]
 
     def __str__(self):
         return f"Session {self.id} ({self.status})"
