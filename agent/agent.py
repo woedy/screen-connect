@@ -267,7 +267,18 @@ class ScreenConnectAgent:
 
     def stop(self):
         self.running = False
+        
+        # Notify server that session has ended (if connected)
+        # We attempt this before setting self.connected = False
+        if self.connected and self.ws:
+            try:
+                # Use a direct send with a separate short-lived timeout to avoid GUI freeze
+                self._send_json({"type": "session_end"}, timeout=0.5)
+            except Exception:
+                pass
+        
         self.connected = False
+        
         # Kill any active commands
         for cmd_id, proc in list(self._active_commands.items()):
             try:
@@ -1365,21 +1376,35 @@ class ScreenConnectAgent:
                 logger.debug(f"Metric loop error: {e}")
                 time.sleep(5)
 
-    def _send_json(self, data):
-        with self._send_lock:
-            if self.ws and self.connected:
-                try:
-                    self.ws.send(json.dumps(data))
-                except Exception as e:
-                    logger.error(f"Send error: {e}")
+    def _send_json(self, data, timeout=None):
+        if not self.ws or not self.connected:
+            return
+            
+        acquired = self._send_lock.acquire(timeout=timeout if timeout is not None else -1)
+        if not acquired:
+            return # Skip if we can't get the lock in time (usually during shutdown)
+            
+        try:
+            self.ws.send(json.dumps(data))
+        except Exception as e:
+            logger.error(f"Send error: {e}")
+        finally:
+            self._send_lock.release()
 
-    def _send_binary(self, data):
-        with self._send_lock:
-            if self.ws and self.connected:
-                try:
-                    self.ws.send(data, opcode=websocket.ABNF.OPCODE_BINARY)
-                except Exception as e:
-                    logger.error(f"Binary send error: {e}")
+    def _send_binary(self, data, timeout=None):
+        if not self.ws or not self.connected:
+            return
+            
+        acquired = self._send_lock.acquire(timeout=timeout if timeout is not None else -1)
+        if not acquired:
+            return # Skip if we can't get the lock in time
+            
+        try:
+            self.ws.send(data, opcode=websocket.ABNF.OPCODE_BINARY)
+        except Exception as e:
+            logger.error(f"Binary send error: {e}")
+        finally:
+            self._send_lock.release()
 
 
 # =============================================================================
