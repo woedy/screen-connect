@@ -63,13 +63,18 @@ services:
     expose:
       - 8000
 
+    networks:
+      - coolify
+      - default
+
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.web.rule=Host(`${SERVICE_FQDN_WEB}`)"
+      - "traefik.http.routers.web.rule=Host(`screen-api.34.214.40.93.sslip.io`)"
       - "traefik.http.routers.web.entrypoints=https"
       - "traefik.http.routers.web.tls=true"
       - "traefik.http.routers.web.tls.certresolver=letsencrypt"
       - "traefik.http.services.web.loadbalancer.server.port=8000"
+      - "traefik.docker.network=coolify"
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
@@ -147,16 +152,25 @@ services:
     expose:
       - 80
 
+    networks:
+      - coolify
+      - default
+
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${SERVICE_FQDN_FRONTEND}`)"
+      - "traefik.http.routers.frontend.rule=Host(`screen-connect.34.214.40.93.sslip.io`)"
       - "traefik.http.routers.frontend.entrypoints=https"
       - "traefik.http.routers.frontend.tls=true"
       - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
+      - "traefik.docker.network=coolify"
 
     depends_on:
       - web
 
 volumes:
   postgres_data:
+
+networks:
+  coolify:
+    external: true
