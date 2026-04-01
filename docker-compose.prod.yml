@@ -8,11 +8,10 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-screenconnect}
       POSTGRES_USER: ${POSTGRES_USER:-screenconnect}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-screenconnect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${DB_PORT:-5432}:5432"
+    # No ports exposed to host. Coolify handles internal networking.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-screenconnect}"]
       interval: 10s
@@ -26,8 +25,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    # No ports exposed to host.
     mem_limit: 512m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -39,30 +37,30 @@ services:
   # Django Backend (ASGI via Daphne)
   # -----------------------------------------------
   web:
-    build: ./backend
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
     restart: unless-stopped
-    volumes:
-      - ./backend:/app
+    # No host volumes. Use immutable image builds for production.
     command: >
       sh -c "
         python manage.py migrate --noinput &&
         daphne -b 0.0.0.0 -p 8000 core.asgi:application
       "
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-super-secret-local-key}
-      - DEBUG=True
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - DEBUG=False
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
       - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
       - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-screenconnect}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+    # No ports exposed to host. Coolify/Traefik will route via domains.
     mem_limit: 512m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
@@ -82,15 +80,13 @@ services:
   celery_worker:
     build: ./backend
     restart: unless-stopped
-    volumes:
-      - ./backend:/app
     command: celery -A core worker -l info --concurrency=2
     mem_limit: 256m
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-super-secret-local-key}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
       - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-screenconnect}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
@@ -110,15 +106,13 @@ services:
   celery_beat:
     build: ./backend
     restart: unless-stopped
-    volumes:
-      - ./backend:/app
     command: celery -A core beat -l info
     mem_limit: 128m
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-super-secret-local-key}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
       - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-screenconnect}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
@@ -133,13 +127,14 @@ services:
         condition: service_started
 
   # -----------------------------------------------
-  # React Frontend (Nginx for Preview)
+  # React Frontend (Nginx)
   # -----------------------------------------------
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT:-3000}:80"
+    # No ports exposed to host. Coolify/Traefik will route via domains.
     depends_on:
       - web
 
