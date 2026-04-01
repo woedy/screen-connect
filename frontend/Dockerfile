@@ -8,7 +8,7 @@ RUN npm ci
 
 COPY . .
 
-# Build arg for API URL
+# Pass API URL to React
 ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
@@ -17,10 +17,7 @@ RUN npm run build
 # Stage 2: Serve with Nginx
 FROM nginx:alpine
 
-# Copy built files
 COPY --from=build /app/dist /usr/share/nginx/html
-
-# Copy nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

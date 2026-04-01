@@ -1,32 +1,29 @@
 services:
   # -----------------------------------------------
-  # PostgreSQL Database
+  # PostgreSQL
   # -----------------------------------------------
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-screenconnect}
-      POSTGRES_USER: ${POSTGRES_USER:-screenconnect}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # No ports exposed to host. Coolify handles internal networking.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-screenconnect}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   # -----------------------------------------------
-  # Redis (Channel Layer + Celery Broker)
+  # Redis
   # -----------------------------------------------
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
-    # No ports exposed to host.
-    mem_limit: 512m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -34,40 +31,44 @@ services:
       retries: 5
 
   # -----------------------------------------------
-  # Django Backend (ASGI via Daphne)
+  # Django Backend (ASGI)
   # -----------------------------------------------
   web:
-    build: 
+    build:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    # No host volumes. Use immutable image builds for production.
     command: >
       sh -c "
         python manage.py migrate --noinput &&
         daphne -b 0.0.0.0 -p 8000 core.asgi:application
       "
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - DEBUG=False
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
-      - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
-      - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=5432
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
-    # No ports exposed to host. Coolify/Traefik will route via domains.
-    mem_limit: 512m
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DEBUG: "False"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+
+    expose:
+      - 8000
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
       interval: 30s
       timeout: 10s
-      start_period: 20s
       retries: 3
+
     depends_on:
       db:
         condition: service_healthy
@@ -81,50 +82,48 @@ services:
     build: ./backend
     restart: unless-stopped
     command: celery -A core worker -l info --concurrency=2
-    mem_limit: 256m
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
-      - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=5432
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      web:
-        condition: service_started
 
   # -----------------------------------------------
-  # Celery Beat (Periodic Tasks)
+  # Celery Beat
   # -----------------------------------------------
   celery_beat:
     build: ./backend
     restart: unless-stopped
     command: celery -A core beat -l info
-    mem_limit: 128m
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - POSTGRES_DB=${POSTGRES_DB:-screenconnect}
-      - POSTGRES_USER=${POSTGRES_USER:-screenconnect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=5432
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      web:
-        condition: service_started
 
   # -----------------------------------------------
   # React Frontend (Nginx)
@@ -134,11 +133,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_API_BASE_URL=${VITE_API_BASE_URL}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     restart: unless-stopped
-    # Expose port 80 internally so Coolify/Traefik can see it
+
     expose:
       - 80
+
     depends_on:
       - web
 
