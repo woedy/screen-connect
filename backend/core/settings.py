@@ -164,7 +164,7 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [REDIS_URL],
-            "capacity": 100,       # Drop stale frames fast — only care about latest
+            "capacity": 20,        # Drop stale frames fast — only care about latest
             "expiry": 5,           # Frames older than 5s are useless
             "group_expiry": 86400, # Keep groups alive for long sessions
         },

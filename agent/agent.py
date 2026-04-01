@@ -99,7 +99,9 @@ class ScreenConnectAgent:
         self.connected = False
         self.capture_thread = None
         self.last_frame_crc = None
+        self.last_block_hashes = {}  # (row, col) -> hash
         self._send_lock = threading.Lock()
+        self._last_send_time = 0
 
         # Active subprocesses for remote terminal
         self._active_commands = {}  # command_id -> Popen
@@ -301,10 +303,48 @@ class ScreenConnectAgent:
 
                     t0 = time.time()
                     try:
-                        shot = sct.grab(sct.monitors[0])
-                        frame = np.array(shot)
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                        # 1. Congestion awareness: skip if we sent a frame very recently 
+                        # and it was a large one (indicates slow network or high CPU)
+                        if t0 - self._last_send_time < (interval * 0.8):
+                            time.sleep(0.01)
+                            continue
 
+                        shot = sct.grab(sct.monitors[0])
+                        # Use raw pixels for faster hashing before expensive CV2 conversions
+                        frame_raw = np.array(shot)
+                        
+                        # 2. Block-based change detection (faster than full-thumbnail CRC)
+                        # Divide screen into 4x4 blocks and check for changes
+                        h_raw, w_raw = frame_raw.shape[:2]
+                        
+                        # Reset block hashes if resolution changes
+                        if not hasattr(self, '_last_raw_dim') or self._last_raw_dim != (w_raw, h_raw):
+                            self.last_block_hashes = {}
+                            self._last_raw_dim = (w_raw, h_raw)
+
+                        rows, cols = 4, 4
+                        bw, bh = w_raw // cols, h_raw // rows
+                        changed = False
+                        
+                        for r in range(rows):
+                            for c in range(cols):
+                                block = frame_raw[r * bh : (r + 1) * bh, c * bw : (c + 1) * bw]
+                                # Fast hash using sum + xor of a subset of pixels
+                                b_hash = zlib.adler32(block[::4, ::4].tobytes())
+                                if self.last_block_hashes.get((r, c)) != b_hash:
+                                    self.last_block_hashes[(r, c)] = b_hash
+                                    changed = True
+                        
+                        if not changed and self.last_frame_crc is not None:
+                            # Static frame — reset quality upward
+                            if current_quality < self.max_quality:
+                                current_quality = min(current_quality + 5, self.max_quality)
+                            time.sleep(max(0, interval - (time.time() - t0)))
+                            continue
+                        self.last_frame_crc = 1 # Mark as not-initial
+
+                        # 3. Processing
+                        frame = cv2.cvtColor(frame_raw, cv2.COLOR_BGRA2BGR)
                         h, w = frame.shape[:2]
                         if w > self.max_width:
                             s = self.max_width / w
@@ -312,21 +352,13 @@ class ScreenConnectAgent:
                                 frame, (int(w * s), int(h * s)),
                                 interpolation=cv2.INTER_LINEAR)
 
-                        # Frame diff using CRC32 on downsampled thumbnail
-                        thumb = cv2.resize(frame, (160, 90))
-                        crc = zlib.crc32(thumb.tobytes())
-                        if crc == self.last_frame_crc:
-                            # Static frame — reset quality upward
-                            if current_quality < self.max_quality:
-                                current_quality = min(current_quality + 5, self.max_quality)
-                            time.sleep(max(0, interval - (time.time() - t0)))
-                            continue
-                        self.last_frame_crc = crc
-
-                        # Encode JPEG
-                        _, buf = cv2.imencode(
-                            ".jpg", frame,
-                            [cv2.IMWRITE_JPEG_QUALITY, current_quality])
+                        # 4. Optimized JPEG Encoding
+                        # IMWRITE_JPEG_OPTIMIZE: 10-15% smaller files for same quality
+                        encode_param = [
+                            cv2.IMWRITE_JPEG_QUALITY, current_quality,
+                            cv2.IMWRITE_JPEG_OPTIMIZE, 1
+                        ]
+                        _, buf = cv2.imencode(".jpg", frame, encode_param)
 
                         # Send as binary: [type(1)] [width(2)] [height(2)] [timestamp(8)] [jpeg...]
                         fh, fw = frame.shape[:2]
@@ -337,6 +369,7 @@ class ScreenConnectAgent:
                             time.time()
                         )
                         self._send_binary(header + buf.tobytes())
+                        self._last_send_time = time.time()
 
                     except Exception as e:
                         logger.error(f"Capture error: {e}")

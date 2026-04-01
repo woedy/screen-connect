@@ -44,7 +44,7 @@ export default function SessionPage() {
   // Handle JSON messages
   const handleMessage = useCallback((data) => {
     const { type } = data
-    console.log('[WS] Message:', data) // Diagnostic logging
+    // Removed diagnostic logging from hot path to save main-thread CPU
 
     if (type === 'connection_status') {
       if (data.role === 'client') {
@@ -66,22 +66,24 @@ export default function SessionPage() {
   const handleBinaryMessage = useCallback((arrayBuffer) => {
     if (arrayBuffer.byteLength < 13) return
 
-    const view = new DataView(arrayBuffer)
-    const msgType = view.getUint8(0)
+    // Use a view for header and subarrays for data payloads to avoid expensive memory copies (slice)
+    const uint8 = new Uint8Array(arrayBuffer)
+    const msgType = uint8[0]
 
     if (msgType === 0x01) {
       // Screen frame: [type(1)] [width(2)] [height(2)] [timestamp(8)] [jpeg...]
-      const width = view.getUint16(1)
-      const height = view.getUint16(3)
-      const jpegData = arrayBuffer.slice(13)
+      const dv = new DataView(arrayBuffer)
+      const width = dv.getUint16(1)
+      const height = dv.getUint16(3)
+      const jpegData = uint8.subarray(13) // Zero-copy view
       canvasRef.current?.drawFrame(jpegData, width, height)
     }
 
     if (msgType === 0x02) {
       // File chunk: [type(1)] [transfer_id(36)] [data...]
       const decoder = new TextDecoder()
-      const transferId = decoder.decode(arrayBuffer.slice(1, 37))
-      const chunkData = arrayBuffer.slice(37)
+      const transferId = decoder.decode(uint8.subarray(1, 37))
+      const chunkData = uint8.subarray(37) // Zero-copy view
       // Forward to FileManager via global handler
       window.__fileManagerChunkHandler?.(transferId, chunkData)
     }

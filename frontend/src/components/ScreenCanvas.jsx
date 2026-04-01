@@ -35,13 +35,19 @@ const ScreenCanvas = forwardRef(function ScreenCanvas({ onMouseEvent, onKeyEvent
       pendingFrameRef.current = null
       const canvas = canvasRef.current
       if (canvas) {
-        const ctx = canvas.getContext('2d')
+        const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
         if (canvas.width !== frame.width || canvas.height !== frame.height) {
           canvas.width = frame.width
           canvas.height = frame.height
         }
         ctx.drawImage(frame, 0, 0)
-        setResolution({ w: frame.width, h: frame.height })
+        
+        // Only update resolution state if it actually changed
+        setResolution(prev => {
+          if (prev.w === frame.width && prev.h === frame.height) return prev
+          return { w: frame.width, h: frame.height }
+        })
+        
         frameCountRef.current++
         frame.close() // Release ImageBitmap memory
       }
@@ -56,17 +62,21 @@ const ScreenCanvas = forwardRef(function ScreenCanvas({ onMouseEvent, onKeyEvent
 
   // Draw frame from binary data — called by parent via ref
   const drawFrame = useCallback((jpegArrayBuffer, width, height) => {
-    if (width && height) {
+    if (width && height && (remoteSize.width !== width || remoteSize.height !== height)) {
       setRemoteSize({ width, height })
     }
 
     const blob = new Blob([jpegArrayBuffer], { type: 'image/jpeg' })
-    createImageBitmap(blob).then((bitmap) => {
+    createImageBitmap(blob, { colorSpaceConversion: 'none' }).then((bitmap) => {
+      // Close previous bitmap if it was never drawn
+      if (pendingFrameRef.current) {
+        pendingFrameRef.current.close()
+      }
       pendingFrameRef.current = bitmap
     }).catch(() => {
-      // Fallback for browsers without createImageBitmap on certain blob types
+      // Fallback
     })
-  }, [])
+  }, [remoteSize])
 
   // Expose drawFrame to parent via ref
   useImperativeHandle(ref, () => ({
@@ -100,11 +110,13 @@ const ScreenCanvas = forwardRef(function ScreenCanvas({ onMouseEvent, onKeyEvent
   }, [mapCoordinates, onMouseEvent])
 
   const handleMouseMove = useCallback((e) => {
+    const coords = mapCoordinates(e)
+    
+    // Throttle move events to ~30 FPS (match agent loop)
     const now = Date.now()
-    if (now - (handleMouseMove._lastSent || 0) < 50) return
+    if (now - (handleMouseMove._lastSent || 0) < 33) return
     handleMouseMove._lastSent = now
 
-    const coords = mapCoordinates(e)
     onMouseEvent?.('mouse_move', coords)
   }, [mapCoordinates, onMouseEvent])
 
