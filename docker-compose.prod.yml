@@ -63,6 +63,9 @@ services:
     expose:
       - 8000
 
+    labels:
+      - "traefik.http.services.web.loadbalancer.server.port=8000"
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
       interval: 30s
@@ -138,6 +141,9 @@ services:
 
     expose:
       - 80
+
+    labels:
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
 
     depends_on:
       - web
