@@ -177,16 +177,19 @@ export default function SessionPage() {
     sendMessage({ type: 'streaming_toggle', enabled: newVal })
   }
 
+  const handleRequestKeyframe = () => {
+    sendMessage({ type: 'request_keyframe' })
+  }
+
   // Sync state with agent on initial connection or reconnection
   useEffect(() => {
     if (isConnected) {
       // Small delay to ensure agent is ready for control messages
       const timer = setTimeout(() => {
         sendMessage({ type: 'bandwidth_mode', enabled: lowBandwidth })
-        sendMessage({ type: 'streaming_toggle', enabled: streamingEnabled })
+        sendMessage({ type: 'streaming_toggle', enabled: streamingEnabled && activeTab === 'screen' })
         
         // Sync privacy screen state if it was persisted
-        const sessionId = window.location.pathname.split('/').pop()
         const isPrivacyActive = localStorage.getItem(`sc_privacy_${sessionId}`) === 'true'
         if (isPrivacyActive) {
           sendMessage({ type: 'privacy_screen', enabled: true })
@@ -194,7 +197,20 @@ export default function SessionPage() {
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [isConnected, lowBandwidth, streamingEnabled, sendMessage])
+  }, [isConnected, lowBandwidth, streamingEnabled, sendMessage, activeTab, sessionId])
+
+  // Tab-Aware Auto-Pause Logic
+  useEffect(() => {
+    if (!isConnected) return
+
+    if (activeTab !== 'screen') {
+      // Pause streaming to save bandwidth for other tasks
+      sendMessage({ type: 'streaming_toggle', enabled: false })
+    } else if (streamingEnabled) {
+      // Resume if user expects it to be on
+      sendMessage({ type: 'streaming_toggle', enabled: true })
+    }
+  }, [activeTab, isConnected, streamingEnabled, sendMessage])
 
   useEffect(() => {
     // Cleanup blob URL when modal closes or component unmounts
@@ -248,8 +264,24 @@ export default function SessionPage() {
           </div>
         </div>
         <div className="session-toolbar-right">
-          {activeTab === 'screen' && (
             <>
+              {!streamingEnabled ? (
+                <span className="badge badge-warning" style={{ marginRight: 8 }}>
+                   Stream Stopped
+                </span>
+              ) : activeTab !== 'screen' ? (
+                <span className="badge badge-info" style={{ marginRight: 8 }}>
+                  ⚡ Auto-Paused (Saving Bandwidth)
+                </span>
+              ) : null}
+
+              <button 
+                className="btn btn-secondary btn-sm" 
+                onClick={handleRequestKeyframe}
+                title="Force a full screen refresh"
+              >
+                🔄 Refresh
+              </button>
               <button 
                 className={`btn btn-sm ${streamingEnabled ? 'btn-secondary' : 'btn-primary'}`} 
                 onClick={toggleStreaming}
@@ -268,7 +300,6 @@ export default function SessionPage() {
                 {isFullscreen ? '⊡ Exit Fullscreen' : '⊞ Fullscreen'}
               </button>
             </>
-          )}
           <button className="btn btn-danger btn-sm" onClick={handleEndSession}>
             ■ End Session
           </button>

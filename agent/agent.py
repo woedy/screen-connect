@@ -71,7 +71,8 @@ MSG_TYPE_TILE = 0x04
 
 # Compression settings
 TILE_SIZE = 128
-KEYFRAME_INTERVAL = 5.0 # Full refresh every 5 seconds
+KEYFRAME_INTERVAL = 30.0 # Full refresh every 30 seconds (adaptive)
+TIMEOUT_SEND = 1.0       # Seconds to wait for a send before skipping
 
 # Dangerous commands blocklist
 BLOCKED_COMMANDS = {
@@ -204,6 +205,8 @@ class ScreenConnectAgent:
         self.last_keyframe_time = 0
         self._send_lock = threading.Lock()
         self._last_send_time = 0
+        self._last_send_duration = 0
+        self._stop_event = threading.Event()
 
         # Privacy screen
         self.privacy_active = False
@@ -250,30 +253,35 @@ class ScreenConnectAgent:
             on_close=self._on_close,
         )
 
+        self._stop_event.clear()
+
         # Start background metrics if psutil is available
         if HAS_PSUTIL:
             self._metrics_thread = threading.Thread(target=self._metric_loop, daemon=True)
             self._metrics_thread.start()
 
-        while self.running:
+        while self.running and not self._stop_event.is_set():
             try:
+                # Use a timeout so we can check self.running periodically
                 self.ws.run_forever(ping_interval=15, ping_timeout=10)
             except Exception as e:
                 logger.error(f"WebSocket error: {e}")
 
-            if self.running:
+            if self.running and not self._stop_event.is_set():
                 self.on_status("reconnecting", "Reconnecting in 3s...")
-                time.sleep(3)
+                # Use wait on event instead of sleep for instant wakeup on stop
+                if self._stop_event.wait(3):
+                    break
 
     def stop(self):
         self.running = False
+        self._stop_event.set()
         
         # Notify server that session has ended (if connected)
-        # We attempt this before setting self.connected = False
         if self.connected and self.ws:
             try:
-                # Use a direct send with a separate short-lived timeout to avoid GUI freeze
-                self._send_json({"type": "session_end"}, timeout=0.5)
+                # Direct send with a very short timeout
+                self._send_json({"type": "session_end"})
             except Exception:
                 pass
         
@@ -287,8 +295,17 @@ class ScreenConnectAgent:
                 pass
         self._active_commands.clear()
 
+        # Shutdown WebSocket socket immediately to break any blocking calls
+        if self.ws and self.ws.sock:
+            try:
+                self.ws.sock.shutdown(socket.SHUT_RDWR)
+                self.ws.sock.close()
+            except Exception:
+                pass
+        
         if self.ws:
             self.ws.close()
+            
         self.on_status("disconnected", "Disconnected")
         logger.info("Agent stopped")
 
@@ -377,6 +394,8 @@ class ScreenConnectAgent:
                 self._handle_camera_snapshot(data)
             elif msg_type == "privacy_screen":
                 self._handle_privacy_screen(data)
+            elif msg_type == "request_keyframe":
+                self._handle_request_keyframe()
 
         except json.JSONDecodeError:
             pass
@@ -436,8 +455,15 @@ class ScreenConnectAgent:
                     t0 = time.time()
                     try:
                         # 1. Congestion awareness
-                        if t0 - self._last_send_time < (interval * 0.8):
-                            time.sleep(0.01)
+                        # Skip frame if the previous send was significantly slower than the target interval
+                        # or if we are already behind schedule.
+                        if t0 - self._last_send_time < (interval * 0.9):
+                            time.sleep(0.005)
+                            continue
+                            
+                        if self._last_send_duration > interval * 2:
+                            # Previous frame was very slow to send, skip this one to allow network to clear
+                            self._last_send_duration = 0 
                             continue
 
                         # Sync with privacy screen
@@ -518,7 +544,7 @@ class ScreenConnectAgent:
                         if current_quality < self.max_quality:
                             current_quality = min(current_quality + 1, self.max_quality)
 
-                    time.sleep(max(0, interval - elapsed))
+                    time.sleep(max(0.001, interval - elapsed))
         except Exception as e:
             logger.error(f"Capture loop fatal: {e}")
 
@@ -546,7 +572,13 @@ class ScreenConnectAgent:
         
         # Reset CRC to force a fresh frame on resume
         if self.streaming_enabled:
-            self.last_frame_crc = None
+            self._handle_request_keyframe()
+
+    def _handle_request_keyframe(self):
+        """Force a fresh full-frame refresh."""
+        logger.info("Manual keyframe requested")
+        self.last_frame_crc = None
+        self.last_keyframe_time = 0
 
     # -- Input handlers --------------------------------------------------------
 
@@ -1376,22 +1408,7 @@ class ScreenConnectAgent:
                 logger.debug(f"Metric loop error: {e}")
                 time.sleep(5)
 
-    def _send_json(self, data, timeout=None):
-        if not self.ws or not self.connected:
-            return
-            
-        acquired = self._send_lock.acquire(timeout=timeout if timeout is not None else -1)
-        if not acquired:
-            return # Skip if we can't get the lock in time (usually during shutdown)
-            
-        try:
-            self.ws.send(json.dumps(data))
-        except Exception as e:
-            logger.error(f"Send error: {e}")
-        finally:
-            self._send_lock.release()
-
-    def _send_binary(self, data, timeout=None):
+    def _send_json(self, data, timeout=TIMEOUT_SEND):
         if not self.ws or not self.connected:
             return
             
@@ -1399,11 +1416,30 @@ class ScreenConnectAgent:
         if not acquired:
             return # Skip if we can't get the lock in time
             
+        t0 = time.time()
+        try:
+            self.ws.send(json.dumps(data))
+        except Exception as e:
+            logger.error(f"Send error: {e}")
+        finally:
+            self._last_send_duration = time.time() - t0
+            self._send_lock.release()
+
+    def _send_binary(self, data, timeout=TIMEOUT_SEND):
+        if not self.ws or not self.connected:
+            return
+            
+        acquired = self._send_lock.acquire(timeout=timeout if timeout is not None else -1)
+        if not acquired:
+            return # Skip if we can't get the lock in time
+            
+        t0 = time.time()
         try:
             self.ws.send(data, opcode=websocket.ABNF.OPCODE_BINARY)
         except Exception as e:
             logger.error(f"Binary send error: {e}")
         finally:
+            self._last_send_duration = time.time() - t0
             self._send_lock.release()
 
 

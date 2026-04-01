@@ -1,38 +1,50 @@
 # ScreenConnect
 
-Self-hosted remote desktop and support tool. A support agent opens a session from the dashboard, shares the link/token with the end user, and the user runs the desktop agent to start the session.
+A high-performance, self-hosted remote management and support platform. Designed for IT professionals to provide instant remote assistance via a standalone agent.
 
 ```
-┌─────────────┐    WebSocket    ┌──────────────┐    React UI    ┌──────────────┐
+┌─────────────┐    Binary WS    ┌──────────────┐    React UI    ┌──────────────┐
 │ Desktop     │ ─────────────▶  │   Django +   │ ◀──────────── │   Browser    │
 │ Agent (py)  │                 │   Channels   │                │  Dashboard   │
 └─────────────┘                 └──────────────┘                └──────────────┘
-                                      │
-                              Postgres + Redis
+                                       │
+                               Postgres + Redis
 ```
 
 ---
 
-## Stack
+## 🚀 Key Features
 
-| Layer     | Tech                              |
-|-----------|-----------------------------------|
-| Backend   | Django 5, DRF, Channels, Daphne   |
-| Realtime  | Django Channels + Redis           |
-| Tasks     | Celery + Celery Beat              |
-| Database  | PostgreSQL 16                     |
-| Frontend  | React 19, Tailwind v4, Vite       |
-| Agent     | Python (mss, opencv, pyautogui)   |
+*   **Real-time Screen Streaming**: High-speed binary WebSocket relay with adaptive JPEG quality.
+*   **Spatial Tiling Delta Compression**: Optimized bandwidth usage by only transmitting changed 128x128px screen tiles.
+*   **Stealth Mode (Privacy Screen)**: Remote-only visible desktop behind a fake "Windows Update" overlay on the client machine.
+*   **Remote Terminal**: Full-featured command execution with streaming output and support for long-running processes.
+*   **File Manager**: High-speed directory traversal, recursive file listing, and chunked upload/download support.
+*   **System Tools**: Real-time process management (kill/list), detailed system telemetry, and bidirectional clipboard sync.
+*   **Native Control**: Low-latency mouse and keyboard injection with modifier key support.
 
 ---
 
-## Quick Start (Docker)
+## 🛠️ Stack
+
+| Component | Technology |
+|-----------|-----------------------------------|
+| **Backend** | Django 5, DRF, Channels (ASGI), Daphne |
+| **Real-time** | Django Channels + Redis (Binary Relay) |
+| **Tasks** | Celery + Celery Beat (Redis Broker) |
+| **Database** | PostgreSQL 16 |
+| **Frontend** | React 19, Tailwind CSS v4, Vite |
+| **Agent** | Python (mss, OpenCV, PyAutoGUI, WebSockets) |
+
+---
+
+## 📦 Quick Start (Docker)
 
 **1. Clone and configure**
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set DJANGO_SECRET_KEY and POSTGRES_PASSWORD
+# Edit .env — set DJANGO_SECRET_KEY, POSTGRES_PASSWORD, etc.
 ```
 
 **2. Start everything**
@@ -44,134 +56,47 @@ docker compose up --build
 **3. Create an admin user**
 
 ```bash
-docker compose exec web python manage.py createsuperuser
+docker compose exec backend python manage.py createsuperuser
 ```
 
-**4. Open the dashboard**
+**4. Access the dashboard**
 
-```
-http://localhost:3000
-```
-
-Log in with the superuser credentials you just created.
+Navigate to `http://localhost:3000` and log in.
 
 ---
 
-## Running Without Docker (Dev)
+## 🖥️ Running the Agent
 
-### Backend
+The agent is a standalone Python script designed to be run on the machine being managed.
 
-Requirements: Python 3.11+, PostgreSQL, Redis running locally.
-
-```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Mac/Linux
-
-pip install -r requirements.txt
-
-# Set env vars or create a .env in backend/
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver
-```
-
-In separate terminals:
-
-```bash
-# Celery worker
-celery -A core worker -l info
-
-# Celery beat (optional, for session cleanup)
-celery -A core beat -l info
-```
-
-### Frontend
-
-Requirements: Node 22+
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Runs at `http://localhost:5173`.
-
----
-
-## Setting Up the Desktop Agent
-
-The agent runs on the **end user's machine** — the one being controlled.
-
-### Install dependencies
-
+### Dev Mode
 ```bash
 cd agent
 pip install -r requirements.txt
+python agent.py --server ws://localhost:8000 --session <id> --token <token>
 ```
 
-### Run the agent
-
-The agent needs a `session_id` and `token` — both come from the dashboard after creating a session.
-
+### Standalone Build (Windows)
 ```bash
-python agent.py --server ws://localhost:8000 --session <session_id> --token <token>
-```
-
-Or build a standalone exe:
-
-```bash
-pip install pyinstaller
-pyinstaller --onefile --noconsole --name ScreenConnect-Agent agent.py
+cd agent
+build.bat
+# Output in agent/dist/ScreenConnect-Agent.exe
 ```
 
 ---
 
-## Testing a Full Session
+## ⚙️ Environment Variables
 
-1. Log into the dashboard at `http://localhost:3000`
-2. Create a new session — you'll get a `session_id` and `token`
-3. On the same machine (or another), run the agent:
-   ```bash
-   python agent.py --server ws://localhost:8000 --session <session_id> --token <token>
-   ```
-4. Back in the dashboard, open the session — you should see the live screen
-
-From the session view you can:
-- View and control the remote screen
-- Browse, upload, and download files
-- Run commands in the remote terminal
-- View system info and running processes
-- Sync clipboard
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DJANGO_SECRET_KEY` | *(default)* | Production security key |
+| `DEBUG` | `True` | Set to `False` for production |
+| `POSTGRES_PASSWORD` | `screenconnect` | Database password |
+| `REDIS_URL` | `redis://redis:6379/0` | Channels/Celery broker |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Allowed frontend origins |
+| `SESSION_EXPIRY_HOURS` | `2` | Auto-cleanup time for sessions |
 
 ---
 
-## Environment Variables
-
-| Variable               | Default                  | Notes                          |
-|------------------------|--------------------------|--------------------------------|
-| `DJANGO_SECRET_KEY`    | *(insecure default)*     | **Change in production**       |
-| `DEBUG`                | `True`                   | Set `False` in production      |
-| `POSTGRES_PASSWORD`    | `screenconnect`          | **Change in production**       |
-| `REDIS_URL`            | `redis://redis:6379/0`   |                                |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000`  | Add your frontend origin       |
-| `SESSION_EXPIRY_HOURS` | `2`                      | How long sessions stay active  |
-
----
-
-## API (brief)
-
-| Method | Endpoint                        | Description              |
-|--------|---------------------------------|--------------------------|
-| POST   | `/api/auth/token/`              | Get JWT token            |
-| POST   | `/api/auth/token/refresh/`      | Refresh JWT              |
-| POST   | `/api/sessions/`                | Create session           |
-| GET    | `/api/sessions/`                | List sessions            |
-| GET    | `/api/sessions/{id}/`           | Session detail           |
-| GET    | `/api/sessions/{id}/join/?token=` | Agent join endpoint    |
-| POST   | `/api/sessions/{id}/end/`       | End session              |
-| GET    | `/health/`                      | Health check             |
-
-WebSocket: `ws://host/ws/session/{id}/?token=xxx&role=client|agent`
+## 📄 License
+This project is for educational and authorized IT support use only.
