@@ -14,7 +14,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 SECRET_KEY = config("DJANGO_SECRET_KEY", default="insecure-dev-key-change-in-production")
 DEBUG = config("DEBUG", default=True, cast=bool)
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
+
+# Ensure ALLOWED_HOSTS is a list and includes localhost for internal health checks
+raw_hosts = config("ALLOWED_HOSTS", default="*")
+ALLOWED_HOSTS = [h.strip() for h in raw_hosts.split(",") if h.strip()]
+
+# Internal health checks use localhost/127.0.0.1
+if "localhost" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("localhost")
+if "127.0.0.1" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("127.0.0.1")
 
 # Production safety: refuse to start with the default key in production
 if not DEBUG and "insecure-dev-key" in SECRET_KEY:
