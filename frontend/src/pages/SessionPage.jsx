@@ -32,8 +32,12 @@ export default function SessionPage() {
   const [sessionEnded, setSessionEnded] = useState(false)
   const [lastMessage, setLastMessage] = useState(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [lowBandwidth, setLowBandwidth] = useState(false)
-  const [streamingEnabled, setStreamingEnabled] = useState(true)
+  const [lowBandwidth, setLowBandwidth] = useState(() => {
+    return localStorage.getItem(`sc_low_bw_${sessionId}`) === 'true'
+  })
+  const [streamingEnabled, setStreamingEnabled] = useState(() => {
+    return localStorage.getItem(`sc_stream_en_${sessionId}`) !== 'false'
+  })
 
   // Retrieve auth token
   const token = localStorage.getItem('access_token')
@@ -137,14 +141,28 @@ export default function SessionPage() {
   const toggleLowBandwidth = () => {
     const newVal = !lowBandwidth
     setLowBandwidth(newVal)
+    localStorage.setItem(`sc_low_bw_${sessionId}`, newVal)
     sendMessage({ type: 'bandwidth_mode', enabled: newVal })
   }
 
   const toggleStreaming = () => {
     const newVal = !streamingEnabled
     setStreamingEnabled(newVal)
+    localStorage.setItem(`sc_stream_en_${sessionId}`, newVal)
     sendMessage({ type: 'streaming_toggle', enabled: newVal })
   }
+
+  // Sync state with agent on initial connection or reconnection
+  useEffect(() => {
+    if (isConnected) {
+      // Small delay to ensure agent is ready for control messages
+      const timer = setTimeout(() => {
+        sendMessage({ type: 'bandwidth_mode', enabled: lowBandwidth })
+        sendMessage({ type: 'streaming_toggle', enabled: streamingEnabled })
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [isConnected, lowBandwidth, streamingEnabled, sendMessage])
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement)
