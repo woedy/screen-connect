@@ -4,7 +4,9 @@ import './FileManager.css'
 /**
  * Remote file browser with upload/download support.
  */
-export default function FileManager({ sendMessage, lastMessage }) {
+const MSG_TYPE_UPLOAD_CHUNK = 0x05
+
+export default function FileManager({ sendMessage, sendBinary, lastMessage }) {
   const [currentPath, setCurrentPath] = useState('')
   const [items, setItems] = useState([])
   const [parentPath, setParentPath] = useState('')
@@ -14,6 +16,11 @@ export default function FileManager({ sendMessage, lastMessage }) {
   const [transfers, setTransfers] = useState({}) // transfer_id -> {name, progress, total, type}
   const [dragOver, setDragOver] = useState(false)
   const [toast, setToast] = useState(null)
+
+  const showToast = useCallback((message, type) => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 3000)
+  }, [])
 
   // Request directory listing
   const navigateTo = useCallback((path) => {
@@ -182,17 +189,28 @@ export default function FileManager({ sendMessage, lastMessage }) {
       // Read and send in chunks
       const buffer = await file.arrayBuffer()
       const chunkSize = 64 * 1024
+      const transferIdBytes = new TextEncoder().encode(transferId)
       for (let offset = 0; offset < buffer.byteLength; offset += chunkSize) {
         const chunk = buffer.slice(offset, offset + chunkSize)
-        // Convert to base64 for JSON transport
-        const base64 = btoa(
-          new Uint8Array(chunk).reduce((data, byte) => data + String.fromCharCode(byte), '')
-        )
-        sendMessage({
-          type: 'file_upload_chunk',
-          transfer_id: transferId,
-          data: base64,
-        })
+        if (sendBinary) {
+          // Binary: [type(1)] [transfer_id(36)] [chunk...]
+          const chunkBytes = new Uint8Array(chunk)
+          const payload = new Uint8Array(1 + 36 + chunkBytes.byteLength)
+          payload[0] = MSG_TYPE_UPLOAD_CHUNK
+          payload.set(transferIdBytes.slice(0, 36), 1)
+          payload.set(chunkBytes, 37)
+          sendBinary(payload.buffer)
+        } else {
+          // Fallback for legacy transport
+          const base64 = btoa(
+            new Uint8Array(chunk).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          )
+          sendMessage({
+            type: 'file_upload_chunk',
+            transfer_id: transferId,
+            data: base64,
+          })
+        }
       }
 
       sendMessage({
@@ -228,11 +246,6 @@ export default function FileManager({ sendMessage, lastMessage }) {
       month: 'short', day: 'numeric', year: 'numeric',
       hour: '2-digit', minute: '2-digit',
     })
-  }
-
-  const showToast = (message, type) => {
-    setToast({ message, type })
-    setTimeout(() => setToast(null), 3000)
   }
 
   // Breadcrumb parts

@@ -68,6 +68,8 @@ MSG_TYPE_FRAME = 0x01
 MSG_TYPE_FILE_CHUNK = 0x02
 MSG_TYPE_CAMERA_SNAP = 0x03
 MSG_TYPE_TILE = 0x04
+MSG_TYPE_UPLOAD_CHUNK = 0x05
+PROTOCOL_VERSION = 1
 
 # Compression settings
 TILE_SIZE = 128
@@ -249,6 +251,7 @@ class ScreenConnectAgent:
             self.ws_url,
             on_open=self._on_open,
             on_message=self._on_message,
+            on_data=self._on_data,
             on_error=self._on_error,
             on_close=self._on_close,
         )
@@ -402,6 +405,21 @@ class ScreenConnectAgent:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
 
+    def _on_data(self, ws, message, data_type, _continue):
+        """Handle binary messages (e.g., file upload chunks from dashboard)."""
+        if data_type != websocket.ABNF.OPCODE_BINARY:
+            return
+        try:
+            if not message:
+                return
+            msg_type = message[0]
+            if msg_type == MSG_TYPE_UPLOAD_CHUNK and len(message) > 37:
+                transfer_id = message[1:37].decode("utf-8", errors="ignore")
+                chunk = message[37:]
+                self._handle_file_upload_chunk_binary(transfer_id, chunk)
+        except Exception as e:
+            logger.error(f"Binary message handling failed: {e}")
+
     def _on_error(self, ws, error):
         logger.error(f"WebSocket error: {error}")
         self.on_status("error", "Connection error")
@@ -439,11 +457,13 @@ class ScreenConnectAgent:
             logger.error(f"Failed to send screen info: {e}")
 
     def _capture_loop(self):
-        interval = 1.0 / self.fps
+        adaptive_fps = max(2, self.fps)
+        interval = 1.0 / adaptive_fps
         logger.info(f"Capturing at {self.fps} FPS (adaptive quality {self.min_quality}-{self.max_quality})")
         logger.info(f"Spatial Tiling enabled: {TILE_SIZE}px tiles")
         current_quality = self.quality
         consecutive_slow = 0
+        consecutive_fast = 0
 
         try:
             with mss.mss() as sct:
@@ -533,16 +553,25 @@ class ScreenConnectAgent:
                         logger.error(f"Capture error: {e}")
 
                     elapsed = time.time() - t0
-                    # Adaptive quality
+                    # Adaptive quality + FPS
                     if elapsed > interval * 1.2:
                         consecutive_slow += 1
+                        consecutive_fast = 0
                         if consecutive_slow >= 3 and current_quality > self.min_quality:
                             current_quality = max(current_quality - 5, self.min_quality)
                             consecutive_slow = 0
+                        if adaptive_fps > 2 and elapsed > interval * 1.5:
+                            adaptive_fps = max(2, adaptive_fps - 1)
+                            interval = 1.0 / adaptive_fps
                     else:
                         consecutive_slow = 0
+                        consecutive_fast += 1
                         if current_quality < self.max_quality:
                             current_quality = min(current_quality + 1, self.max_quality)
+                        if consecutive_fast >= 15 and adaptive_fps < self.fps:
+                            adaptive_fps = min(self.fps, adaptive_fps + 1)
+                            interval = 1.0 / adaptive_fps
+                            consecutive_fast = 0
 
                     time.sleep(max(0.001, interval - elapsed))
         except Exception as e:
@@ -969,6 +998,17 @@ class ScreenConnectAgent:
             transfer["bytes_received"] += len(raw)
         except Exception as e:
             logger.error(f"Upload chunk error: {e}")
+
+    def _handle_file_upload_chunk_binary(self, transfer_id, chunk_data):
+        """Write a binary chunk of uploaded data."""
+        transfer = self._active_transfers.get(transfer_id)
+        if not transfer:
+            return
+        try:
+            transfer["file"].write(chunk_data)
+            transfer["bytes_received"] += len(chunk_data)
+        except Exception as e:
+            logger.error(f"Binary upload chunk error: {e}")
 
     def _handle_file_upload_complete(self, d):
         """Finalize uploaded file."""
@@ -1418,6 +1458,8 @@ class ScreenConnectAgent:
             
         t0 = time.time()
         try:
+            if isinstance(data, dict) and "v" not in data:
+                data = {**data, "v": PROTOCOL_VERSION}
             self.ws.send(json.dumps(data))
         except Exception as e:
             logger.error(f"Send error: {e}")

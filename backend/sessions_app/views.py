@@ -1,6 +1,15 @@
+import json
+import time
+
+from django.http import StreamingHttpResponse
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import AccessToken
+
+from django.contrib.auth.models import User
+from rest_framework.pagination import CursorPagination
 
 from .models import SupportSession
 from .serializers import (
@@ -25,9 +34,19 @@ class SessionListView(generics.ListAPIView):
 
     serializer_class = SessionListSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    class SessionCursorPagination(CursorPagination):
+        page_size = 25
+        ordering = "-created_at"
+
+    pagination_class = SessionCursorPagination
 
     def get_queryset(self):
-        return SupportSession.objects.filter(created_by=self.request.user)
+        queryset = SupportSession.objects.filter(created_by=self.request.user)
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
 
 
 class SessionDetailView(generics.RetrieveAPIView):
@@ -122,3 +141,46 @@ class SessionJoinView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class SessionStreamView(APIView):
+    """
+    GET /api/sessions/stream/?token=<access_token>
+    Server-Sent Events stream for dashboard session updates.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token")
+        if not token:
+            return Response({"error": "Token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            decoded = AccessToken(token)
+            user = User.objects.get(id=decoded["user_id"])
+        except (TokenError, User.DoesNotExist, KeyError, ValueError):
+            return Response({"error": "Invalid token"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        def event_stream():
+            last_payload = None
+            while True:
+                rows = list(
+                    SupportSession.objects.filter(created_by=user)
+                    .values(
+                        "id", "status", "client_connected", "agent_connected",
+                        "created_at", "expires_at", "ended_at", "token"
+                    )
+                    .order_by("-created_at")[:100]
+                )
+                payload = json.dumps(rows, default=str)
+                if payload != last_payload:
+                    yield f"event: sessions\ndata: {payload}\n\n"
+                    last_payload = payload
+                yield "event: heartbeat\ndata: ok\n\n"
+                time.sleep(3)
+
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
+        return response
