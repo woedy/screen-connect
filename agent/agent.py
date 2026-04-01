@@ -108,6 +108,19 @@ class ScreenConnectAgent:
         # Current working directory for the remote terminal
         self.terminal_cwd = os.path.expanduser("~")
 
+        # Performance: background metrics to avoid blocking WS handlers
+        self._metrics = {
+            "cpu_percent": 0.0,
+            "memory_percent": 0.0,
+            "memory_used": 0,
+            "memory_total": 0,
+            "disks": [],
+            "network_interfaces": [],
+        }
+        self._metrics_lock = threading.Lock()
+        self._metrics_thread = None
+        self.streaming_enabled = True
+
     @property
     def ws_url(self):
         return (
@@ -127,6 +140,11 @@ class ScreenConnectAgent:
             on_error=self._on_error,
             on_close=self._on_close,
         )
+
+        # Start background metrics if psutil is available
+        if HAS_PSUTIL:
+            self._metrics_thread = threading.Thread(target=self._metric_loop, daemon=True)
+            self._metrics_thread.start()
 
         while self.running:
             try:
@@ -222,6 +240,10 @@ class ScreenConnectAgent:
                 self._handle_clipboard_get()
             elif msg_type == "clipboard_set":
                 self._handle_clipboard_set(data)
+            elif msg_type == "bandwidth_mode":
+                self._handle_bandwidth_mode(data)
+            elif msg_type == "streaming_toggle":
+                self._handle_streaming_toggle(data)
 
         except json.JSONDecodeError:
             pass
@@ -273,6 +295,10 @@ class ScreenConnectAgent:
         try:
             with mss.mss() as sct:
                 while self.running and self.connected:
+                    if not self.streaming_enabled:
+                        time.sleep(0.5)
+                        continue
+
                     t0 = time.time()
                     try:
                         shot = sct.grab(sct.monitors[0])
@@ -331,6 +357,32 @@ class ScreenConnectAgent:
                     time.sleep(max(0, interval - elapsed))
         except Exception as e:
             logger.error(f"Capture loop fatal: {e}")
+
+    def _handle_bandwidth_mode(self, d):
+        """Toggle low-bandwidth settings."""
+        enabled = d.get("enabled", False)
+        if enabled:
+            logger.info("Enabling Low Bandwidth Mode (4 FPS, 25 Quality, 1080px)")
+            self.fps = 4
+            self.quality = 25
+            self.max_width = 1080
+        else:
+            logger.info("Disabling Low Bandwidth Mode (Reverting to 8 FPS, 50 Quality, 1920px)")
+            self.fps = 8
+            self.quality = 50
+            self.max_width = 1920
+        
+        # Trigger an immediate quality update in the capture loop
+        self.last_frame_crc = None 
+
+    def _handle_streaming_toggle(self, d):
+        """Enable/disable binary frame streaming."""
+        self.streaming_enabled = d.get("enabled", True)
+        logger.info(f"Screen streaming {'enabled' if self.streaming_enabled else 'disabled'}")
+        
+        # Reset CRC to force a fresh frame on resume
+        if self.streaming_enabled:
+            self.last_frame_crc = None
 
     # -- Input handlers --------------------------------------------------------
 
@@ -450,27 +502,68 @@ class ScreenConnectAgent:
                 })
                 return
 
+            # Initial response with location info
+            self._send_json({
+                "type": "file_list_response",
+                "path": str(target),
+                "parent": str(target.parent) if str(target) != str(target.parent) else "",
+                "is_root": False,
+                "is_chunked": True,
+            })
+
             items = []
+            chunk_size = 200
             try:
-                for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-                    try:
-                        stat = entry.stat()
-                        items.append({
-                            "name": entry.name,
-                            "path": str(entry),
-                            "is_dir": entry.is_dir(),
-                            "size": stat.st_size if not entry.is_dir() else 0,
-                            "modified": stat.st_mtime,
-                        })
-                    except (PermissionError, OSError):
-                        items.append({
-                            "name": entry.name,
-                            "path": str(entry),
-                            "is_dir": entry.is_dir(),
-                            "size": 0,
-                            "modified": 0,
-                            "error": "Access denied",
-                        })
+                # Use os.scandir for much better performance than Path.iterdir
+                with os.scandir(str(target)) as entries:
+                    for entry in entries:
+                        if not self.running or not self.connected:
+                            break
+                        try:
+                            # entry.stat() is often cached on Windows/Linux during scandir
+                            st = entry.stat(follow_symlinks=False)
+                            is_dir = entry.is_dir()
+                            items.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "is_dir": is_dir,
+                                "size": st.st_size if not is_dir else 0,
+                                "modified": st.st_mtime,
+                            })
+                        except (PermissionError, OSError):
+                            items.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "is_dir": entry.is_dir(),
+                                "size": 0,
+                                "modified": 0,
+                                "error": "Access denied",
+                            })
+
+                        # Send chunk if we hit the limit
+                        if len(items) >= chunk_size:
+                            self._send_json({
+                                "type": "file_list_chunk",
+                                "path": str(target),
+                                "items": items,
+                            })
+                            items = []
+                            time.sleep(0.01) # Yield slightly
+
+                # Send remaining items
+                if items:
+                    self._send_json({
+                        "type": "file_list_chunk",
+                        "path": str(target),
+                        "items": items,
+                    })
+
+                # Finalize
+                self._send_json({
+                    "type": "file_list_complete",
+                    "path": str(target),
+                })
+
             except PermissionError:
                 self._send_json({
                     "type": "file_list_response",
@@ -479,14 +572,6 @@ class ScreenConnectAgent:
                     "items": [],
                 })
                 return
-
-            self._send_json({
-                "type": "file_list_response",
-                "path": str(target),
-                "parent": str(target.parent) if str(target) != str(target.parent) else "",
-                "items": items,
-                "is_root": False,
-            })
         except Exception as e:
             logger.error(f"File list error: {e}")
             self._send_json({
@@ -723,24 +808,62 @@ class ScreenConnectAgent:
 
                 self._active_commands[command_id] = proc
 
-                # Stream stdout in a separate thread
+                # Stream stdout/stderr in a buffered way to avoid WS congestion
                 def stream_output(pipe, stream_name):
+                    buffer = ""
+                    last_flush = time.time()
                     try:
-                        for line in iter(pipe.readline, b""):
-                            if not self.connected:
+                        # Use read(4096) instead of readline to capture partial prompts
+                        while self.connected and self.running:
+                            # Check if process ended
+                            if proc.poll() is not None:
+                                # Final check for remaining output
+                                remaining = pipe.read()
+                                if remaining:
+                                    try:
+                                        text = remaining.decode("utf-8", errors="replace")
+                                    except:
+                                        text = str(remaining)
+                                    buffer += text
                                 break
+
+                            # Non-blocking read (or small batch)
+                            # On Windows, we can't easily do non-blocking on pipes without complicated APIs
+                            # So we read a small amount or wait with a timeout.
+                            # For simplicity we read 1024 bytes with a short block.
+                            chunk = pipe.read(1024)
+                            if not chunk:
+                                time.sleep(0.01)
+                                continue
+
                             try:
-                                text = line.decode("utf-8", errors="replace")
+                                text = chunk.decode("utf-8", errors="replace")
                             except Exception:
-                                text = str(line)
+                                text = str(chunk)
+                            
+                            buffer += text
+                            
+                            # Flush if buffer is large or 50ms passed
+                            if len(buffer) > 2000 or (time.time() - last_flush > 0.05 and buffer):
+                                self._send_json({
+                                    "type": "command_output",
+                                    "command_id": command_id,
+                                    "stream": stream_name,
+                                    "data": buffer,
+                                })
+                                buffer = ""
+                                last_flush = time.time()
+                        
+                        # Final flush
+                        if buffer:
                             self._send_json({
                                 "type": "command_output",
                                 "command_id": command_id,
                                 "stream": stream_name,
-                                "data": text,
+                                "data": buffer,
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Stream error {stream_name}: {e}")
 
                 stdout_thread = threading.Thread(target=stream_output, args=(proc.stdout, "stdout"), daemon=True)
                 stderr_thread = threading.Thread(target=stream_output, args=(proc.stderr, "stderr"), daemon=True)
@@ -804,58 +927,28 @@ class ScreenConnectAgent:
     def _handle_system_info(self):
         """Send system information."""
         try:
-            info = {
-                "type": "system_info",
-                "hostname": socket.gethostname(),
-                "platform": platform.system(),
-                "platform_release": platform.release(),
-                "platform_version": platform.version(),
-                "architecture": platform.machine(),
-                "processor": platform.processor(),
-                "ip_address": self._get_local_ip(),
-                "username": os.getlogin() if hasattr(os, "getlogin") else "unknown",
-            }
-
-            if HAS_PSUTIL:
-                mem = psutil.virtual_memory()
-                info.update({
-                    "cpu_count": psutil.cpu_count(),
-                    "cpu_percent": psutil.cpu_percent(interval=0.5),
-                    "memory_total": mem.total,
-                    "memory_used": mem.used,
-                    "memory_percent": mem.percent,
-                    "boot_time": psutil.boot_time(),
-                })
-
-                # Disk info
-                disks = []
-                for part in psutil.disk_partitions(all=False):
-                    try:
-                        usage = psutil.disk_usage(part.mountpoint)
-                        disks.append({
-                            "device": part.device,
-                            "mountpoint": part.mountpoint,
-                            "fstype": part.fstype,
-                            "total": usage.total,
-                            "used": usage.used,
-                            "free": usage.free,
-                            "percent": usage.percent,
-                        })
-                    except (PermissionError, OSError):
-                        pass
-                info["disks"] = disks
-
-                # Network interfaces
-                nets = []
-                for name, addrs in psutil.net_if_addrs().items():
-                    for addr in addrs:
-                        if addr.family == socket.AF_INET:
-                            nets.append({
-                                "name": name,
-                                "ip": addr.address,
-                                "netmask": addr.netmask,
-                            })
-                info["network_interfaces"] = nets
+            with self._metrics_lock:
+                m = self._metrics
+                info = {
+                    "type": "system_info",
+                    "hostname": socket.gethostname(),
+                    "platform": platform.system(),
+                    "platform_release": platform.release(),
+                    "platform_version": platform.version(),
+                    "architecture": platform.machine(),
+                    "processor": platform.processor(),
+                    "ip_address": self._get_local_ip(),
+                    "username": os.getlogin() if hasattr(os, "getlogin") else "unknown",
+                    
+                    # Cached non-blocking metrics
+                    "cpu_percent": m["cpu_percent"],
+                    "memory_total": m["memory_total"],
+                    "memory_used": m["memory_used"],
+                    "memory_percent": m["memory_percent"],
+                    "disks": m["disks"],
+                    "network_interfaces": m["network_interfaces"],
+                    "boot_time": m.get("boot_time", 0),
+                }
 
             self._send_json(info)
         except Exception as e:
@@ -965,6 +1058,60 @@ class ScreenConnectAgent:
             return ip
         except Exception:
             return "127.0.0.1"
+
+    def _metric_loop(self):
+        """Background thread to sample system metrics without blocking handlers."""
+        logger.info("Starting background metric collection")
+        # Initialize cpu_percent
+        if HAS_PSUTIL:
+            psutil.cpu_percent(interval=None)
+            
+        while self.running:
+            try:
+                if HAS_PSUTIL:
+                    cpu = psutil.cpu_percent(interval=None)
+                    mem = psutil.virtual_memory()
+                    
+                    # Disk info
+                    disks = []
+                    for part in psutil.disk_partitions(all=False):
+                        try:
+                            usage = psutil.disk_usage(part.mountpoint)
+                            disks.append({
+                                "device": part.device,
+                                "mountpoint": part.mountpoint,
+                                "fstype": part.fstype,
+                                "total": usage.total,
+                                "used": usage.used,
+                                "free": usage.free,
+                                "percent": usage.percent,
+                            })
+                        except: pass
+                        
+                    # Network
+                    nets = []
+                    try:
+                        for name, addrs in psutil.net_if_addrs().items():
+                            for addr in addrs:
+                                if addr.family == socket.AF_INET:
+                                    nets.append({"name": name, "ip": addr.address})
+                    except: pass
+
+                    with self._metrics_lock:
+                        self._metrics.update({
+                            "cpu_percent": cpu,
+                            "memory_total": mem.total,
+                            "memory_used": mem.used,
+                            "memory_percent": mem.percent,
+                            "disks": disks,
+                            "network_interfaces": nets,
+                            "boot_time": psutil.boot_time(),
+                        })
+                
+                time.sleep(2) # Sample every 2 seconds
+            except Exception as e:
+                logger.debug(f"Metric loop error: {e}")
+                time.sleep(5)
 
     def _send_json(self, data):
         with self._send_lock:

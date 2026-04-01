@@ -33,11 +33,26 @@ export default function FileManager({ sendMessage, lastMessage }) {
     const { type } = lastMessage
 
     if (type === 'file_list_response') {
-      setItems(lastMessage.items || [])
+      setItems([]) // Clear current items for the new path
       setCurrentPath(lastMessage.path || '')
       setParentPath(lastMessage.parent || '')
       setIsRoot(lastMessage.is_root || false)
       setError(lastMessage.error || null)
+      
+      // If it's not chunked, we're done (fallback for old agents)
+      if (!lastMessage.is_chunked) {
+        setItems(lastMessage.items || [])
+        setLoading(false)
+      } else {
+        setLoading(true) // Keep loading until 'file_list_complete'
+      }
+    }
+
+    if (type === 'file_list_chunk') {
+      setItems(prev => [...prev, ...(lastMessage.items || [])])
+    }
+
+    if (type === 'file_list_complete') {
       setLoading(false)
     }
 

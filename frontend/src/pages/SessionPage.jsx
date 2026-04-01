@@ -32,6 +32,8 @@ export default function SessionPage() {
   const [sessionEnded, setSessionEnded] = useState(false)
   const [lastMessage, setLastMessage] = useState(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [lowBandwidth, setLowBandwidth] = useState(false)
+  const [streamingEnabled, setStreamingEnabled] = useState(true)
 
   // Retrieve auth token
   const token = localStorage.getItem('access_token')
@@ -130,6 +132,18 @@ export default function SessionPage() {
     }
   }
 
+  const toggleLowBandwidth = () => {
+    const newVal = !lowBandwidth
+    setLowBandwidth(newVal)
+    sendMessage({ type: 'bandwidth_mode', enabled: newVal })
+  }
+
+  const toggleStreaming = () => {
+    const newVal = !streamingEnabled
+    setStreamingEnabled(newVal)
+    sendMessage({ type: 'streaming_toggle', enabled: newVal })
+  }
+
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement)
     document.addEventListener('fullscreenchange', handler)
@@ -176,9 +190,25 @@ export default function SessionPage() {
         </div>
         <div className="session-toolbar-right">
           {activeTab === 'screen' && (
-            <button className="btn btn-secondary btn-sm" onClick={toggleFullscreen}>
-              {isFullscreen ? '⊡ Exit Fullscreen' : '⊞ Fullscreen'}
-            </button>
+            <>
+              <button 
+                className={`btn btn-sm ${streamingEnabled ? 'btn-secondary' : 'btn-primary'}`} 
+                onClick={toggleStreaming}
+                title="Toggles the screen stream on/off to save bandwidth"
+              >
+                {streamingEnabled ? '⏹ Stop Stream' : '▶ Start Stream'}
+              </button>
+              <button 
+                className={`btn btn-sm ${lowBandwidth ? 'btn-primary' : 'btn-secondary'}`} 
+                onClick={toggleLowBandwidth}
+                title="Lowers FPS and Quality to save mobile data"
+              >
+                {lowBandwidth ? '📶 Low Bandwidth: ON' : '📶 Low Bandwidth: OFF'}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={toggleFullscreen}>
+                {isFullscreen ? '⊡ Exit Fullscreen' : '⊞ Fullscreen'}
+              </button>
+            </>
           )}
           <button className="btn btn-danger btn-sm" onClick={handleEndSession}>
             ■ End Session

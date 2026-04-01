@@ -29,6 +29,8 @@ AGENT_TO_CLIENT_TYPES = {
     # System tools
     "system_info_request", "process_list_request", "process_kill",
     "clipboard_get", "clipboard_set",
+    # Bandwidth controls
+    "bandwidth_mode", "streaming_toggle",
 }
 
 # Message types routed from client → agent
