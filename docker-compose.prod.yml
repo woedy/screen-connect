@@ -136,7 +136,13 @@ services:
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
     restart: unless-stopped
-    # No ports exposed to host. Coolify/Traefik will route via domains.
+    # Expose port 80 internally so Coolify/Traefik can see it
+    expose:
+      - 80
+    # Explicitly tell Traefik where to send the traffic to prevent 404s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
     depends_on:
       - web
 
