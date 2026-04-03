@@ -68,6 +68,8 @@ MSG_TYPE_FRAME = 0x01
 MSG_TYPE_FILE_CHUNK = 0x02
 MSG_TYPE_CAMERA_SNAP = 0x03
 MSG_TYPE_TILE = 0x04
+MSG_TYPE_UPLOAD_CHUNK = 0x05
+PROTOCOL_VERSION = 1
 
 # Compression settings
 TILE_SIZE = 128
@@ -101,6 +103,7 @@ class PrivacyOverlay:
         self._dots = []
         self._center = (0, 0)
         self._bg_img = None
+        self.capture_exclusion_enabled = False
 
     def start(self):
         """Must be called from transition state on the main GUI thread."""
@@ -112,6 +115,8 @@ class PrivacyOverlay:
         self.overlay.configure(bg="#00185a") # Windows blue
         self.overlay.withdraw() # Start hidden
         self.overlay.grab_set()
+        self.overlay.update_idletasks()
+        self.capture_exclusion_enabled = self._enable_capture_exclusion()
 
         self.canvas = tk.Canvas(self.overlay, bg="#00185a", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -135,6 +140,36 @@ class PrivacyOverlay:
 
         self.active = True
         self._animate()
+
+    def _enable_capture_exclusion(self):
+        """
+        Keep overlay visible on local monitor while excluding it from screen capture.
+        Works on modern Windows builds via SetWindowDisplayAffinity.
+        """
+        if platform.system() != "Windows" or not self.overlay:
+            return False
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            hwnd = wintypes.HWND(self.overlay.winfo_id())
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            WDA_MONITOR = 0x00000001
+
+            ok = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+            if not ok:
+                # Fallback for older Windows versions.
+                ok = user32.SetWindowDisplayAffinity(hwnd, WDA_MONITOR)
+
+            if ok:
+                logger.info("Privacy overlay excluded from capture via display affinity")
+                return True
+        except Exception as e:
+            logger.debug(f"Display affinity unsupported: {e}")
+
+        return False
 
     def _animate(self):
         if not self.active or not self.overlay: return
@@ -249,6 +284,7 @@ class ScreenConnectAgent:
             self.ws_url,
             on_open=self._on_open,
             on_message=self._on_message,
+            on_data=self._on_data,
             on_error=self._on_error,
             on_close=self._on_close,
         )
@@ -402,6 +438,21 @@ class ScreenConnectAgent:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
 
+    def _on_data(self, ws, message, data_type, _continue):
+        """Handle binary messages (e.g., file upload chunks from dashboard)."""
+        if data_type != websocket.ABNF.OPCODE_BINARY:
+            return
+        try:
+            if not message:
+                return
+            msg_type = message[0]
+            if msg_type == MSG_TYPE_UPLOAD_CHUNK and len(message) > 37:
+                transfer_id = message[1:37].decode("utf-8", errors="ignore")
+                chunk = message[37:]
+                self._handle_file_upload_chunk_binary(transfer_id, chunk)
+        except Exception as e:
+            logger.error(f"Binary message handling failed: {e}")
+
     def _on_error(self, ws, error):
         logger.error(f"WebSocket error: {error}")
         self.on_status("error", "Connection error")
@@ -439,11 +490,13 @@ class ScreenConnectAgent:
             logger.error(f"Failed to send screen info: {e}")
 
     def _capture_loop(self):
-        interval = 1.0 / self.fps
+        adaptive_fps = max(2, self.fps)
+        interval = 1.0 / adaptive_fps
         logger.info(f"Capturing at {self.fps} FPS (adaptive quality {self.min_quality}-{self.max_quality})")
         logger.info(f"Spatial Tiling enabled: {TILE_SIZE}px tiles")
         current_quality = self.quality
         consecutive_slow = 0
+        consecutive_fast = 0
 
         try:
             with mss.mss() as sct:
@@ -466,14 +519,21 @@ class ScreenConnectAgent:
                             self._last_send_duration = 0 
                             continue
 
-                        # Sync with privacy screen
-                        if self.privacy_active and self.privacy_overlay:
+                        # Sync with privacy screen.
+                        # Prefer display-affinity exclusion (no local flicker).
+                        # Fallback to hide/show only if exclusion isn't available.
+                        needs_hide_show = (
+                            self.privacy_active
+                            and self.privacy_overlay
+                            and not self.privacy_overlay.capture_exclusion_enabled
+                        )
+                        if needs_hide_show:
                             self.privacy_overlay.hide()
                             time.sleep(0.005)
 
                         shot = sct.grab(sct.monitors[0])
                         
-                        if self.privacy_active and self.privacy_overlay:
+                        if needs_hide_show:
                             self.privacy_overlay.show()
 
                         frame_raw = np.array(shot)
@@ -533,16 +593,25 @@ class ScreenConnectAgent:
                         logger.error(f"Capture error: {e}")
 
                     elapsed = time.time() - t0
-                    # Adaptive quality
+                    # Adaptive quality + FPS
                     if elapsed > interval * 1.2:
                         consecutive_slow += 1
+                        consecutive_fast = 0
                         if consecutive_slow >= 3 and current_quality > self.min_quality:
                             current_quality = max(current_quality - 5, self.min_quality)
                             consecutive_slow = 0
+                        if adaptive_fps > 2 and elapsed > interval * 1.5:
+                            adaptive_fps = max(2, adaptive_fps - 1)
+                            interval = 1.0 / adaptive_fps
                     else:
                         consecutive_slow = 0
+                        consecutive_fast += 1
                         if current_quality < self.max_quality:
                             current_quality = min(current_quality + 1, self.max_quality)
+                        if consecutive_fast >= 15 and adaptive_fps < self.fps:
+                            adaptive_fps = min(self.fps, adaptive_fps + 1)
+                            interval = 1.0 / adaptive_fps
+                            consecutive_fast = 0
 
                     time.sleep(max(0.001, interval - elapsed))
         except Exception as e:
@@ -618,37 +687,52 @@ class ScreenConnectAgent:
         action = d.get("action")
         logger.info(f"System action requested: {action}")
 
+        def _spawn_hidden(command, shell=False):
+            """Run command without flashing a terminal window."""
+            kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "shell": shell,
+            }
+            if platform.system() == "Windows":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                kwargs["startupinfo"] = startupinfo
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess.Popen(command, **kwargs)
+
         try:
             if action == "lock":
-                os.system("rundll32.exe user32.dll,LockWorkStation")
+                _spawn_hidden(["rundll32.exe", "user32.dll,LockWorkStation"])
             elif action == "logout":
-                os.system("shutdown /l")
+                _spawn_hidden(["shutdown", "/l"])
             elif action == "restart":
-                os.system("shutdown /r /t 0")
+                _spawn_hidden(["shutdown", "/r", "/t", "0"])
             elif action == "shutdown":
-                os.system("shutdown /s /t 0")
+                _spawn_hidden(["shutdown", "/s", "/t", "0"])
             elif action == "sleep":
                 # Uses PowerShell to call SetSuspendState
                 cmd = "powershell.exe -Command \"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)\""
-                subprocess.Popen(cmd, shell=True)
+                _spawn_hidden(cmd, shell=True)
             elif action == "mute":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]173)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]173)\"", shell=True)
             elif action == "vol_up":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]175)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]175)\"", shell=True)
             elif action == "vol_down":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]174)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]174)\"", shell=True)
             elif action == "empty_recycle_bin":
-                os.system("powershell.exe -Command \"Clear-RecycleBin -Confirm:$false\"")
+                _spawn_hidden("powershell.exe -Command \"Clear-RecycleBin -Confirm:$false\"", shell=True)
             elif action == "show_desktop":
-                os.system("powershell.exe -Command \"(New-Object -ComObject shell.application).toggleDesktop()\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject shell.application).toggleDesktop()\"", shell=True)
             elif action == "monitor_off":
                 # SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
                 cmd = "powershell.exe -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")]public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -PassThru)::SendMessage(0xffff, 0x0112, 0xf170, 2)\""
-                subprocess.Popen(cmd, shell=True)
+                _spawn_hidden(cmd, shell=True)
             elif action == "brightness_up":
-                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10; if($b -gt 100){$b=100}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+                _spawn_hidden("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10; if($b -gt 100){$b=100}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"", shell=True)
             elif action == "brightness_down":
-                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10; if($b -lt 0){$b=0}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+                _spawn_hidden("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10; if($b -lt 0){$b=0}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"", shell=True)
         except Exception as e:
             logger.error(f"System action failed ({action}): {e}")
 
@@ -969,6 +1053,17 @@ class ScreenConnectAgent:
             transfer["bytes_received"] += len(raw)
         except Exception as e:
             logger.error(f"Upload chunk error: {e}")
+
+    def _handle_file_upload_chunk_binary(self, transfer_id, chunk_data):
+        """Write a binary chunk of uploaded data."""
+        transfer = self._active_transfers.get(transfer_id)
+        if not transfer:
+            return
+        try:
+            transfer["file"].write(chunk_data)
+            transfer["bytes_received"] += len(chunk_data)
+        except Exception as e:
+            logger.error(f"Binary upload chunk error: {e}")
 
     def _handle_file_upload_complete(self, d):
         """Finalize uploaded file."""
@@ -1418,6 +1513,8 @@ class ScreenConnectAgent:
             
         t0 = time.time()
         try:
+            if isinstance(data, dict) and "v" not in data:
+                data = {**data, "v": PROTOCOL_VERSION}
             self.ws.send(json.dumps(data))
         except Exception as e:
             logger.error(f"Send error: {e}")
