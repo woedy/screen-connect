@@ -135,6 +135,18 @@ export default function DashboardPage() {
     }
   }
 
+  const handleRestartSession = async (sessionId) => {
+    try {
+      await api.post(`/api/sessions/${sessionId}/restart/`)
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: 'waiting' } : s))
+      )
+      showToast('Session restarted', 'success')
+    } catch {
+      showToast('Failed to restart session', 'error')
+    }
+  }
+
   const handleCopyLink = (session) => {
     // Build the agent command for the client
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -221,6 +233,7 @@ export default function DashboardPage() {
                   key={session.id}
                   session={session}
                   onEnd={handleEndSession}
+                  onRestart={handleRestartSession}
                   onCopyLink={handleCopyLink}
                 />
               ))}
@@ -241,6 +254,7 @@ export default function DashboardPage() {
                   key={session.id}
                   session={session}
                   onEnd={handleEndSession}
+                  onRestart={handleRestartSession}
                   onCopyLink={handleCopyLink}
                 />
               ))}

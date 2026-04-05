@@ -55,6 +55,17 @@ class SupportSession(models.Model):
     expires_at = models.DateTimeField(default=default_expiry)
     ended_at = models.DateTimeField(null=True, blank=True)
 
+    # Machine identifiers for automatic registration
+    machine_id = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        db_index=True,
+        help_text="Unique hardware-bound ID from the client machine"
+    )
+    hostname = models.CharField(max_length=255, null=True, blank=True)
+    os_info = models.CharField(max_length=255, null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         verbose_name = "Support Session"

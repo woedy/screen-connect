@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import './SessionCard.css'
 
-export default function SessionCard({ session, onEnd, onCopyLink }) {
+export default function SessionCard({ session, onEnd, onRestart, onCopyLink }) {
   const navigate = useNavigate()
 
   const statusClass = {
@@ -94,6 +94,20 @@ export default function SessionCard({ session, onEnd, onCopyLink }) {
               End
             </button>
           </>
+        )}
+        
+        {session.status === 'ended' && (
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => onRestart(session.id)}
+            id={`restart-session-${session.id}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M23 4v6h-6M1 20v-6h6"/>
+              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+            </svg>
+            Restart
+          </button>
         )}
       </div>
     </div>

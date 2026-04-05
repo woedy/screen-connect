@@ -8,6 +8,7 @@ import SystemInfo from '../components/SystemInfo'
 import ProcessManager from '../components/ProcessManager'
 import ClipboardSync from '../components/ClipboardSync'
 import ActionsManager from '../components/ActionsManager'
+import BrowserManager from '../components/BrowserManager'
 import './SessionPage.css'
 
 const DEFAULT_WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
@@ -21,6 +22,7 @@ const TABS = [
   { id: 'system', label: '⚙ System', icon: 'system' },
   { id: 'processes', label: '📊 Processes', icon: 'processes' },
   { id: 'clipboard', label: '📋 Clipboard', icon: 'clipboard' },
+  { id: 'browsers', label: '🌐 Browsers', icon: 'browsers' },
   { id: 'actions', label: '🛠 Actions', icon: 'actions' },
 ]
 
@@ -364,6 +366,10 @@ export default function SessionPage() {
 
         {activeTab === 'clipboard' && (
           <ClipboardSync sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
+        )}
+
+        {activeTab === 'browsers' && (
+          <BrowserManager sendMessage={sendProtocolMessage} lastMessage={lastMessage} />
         )}
 
         {activeTab === 'actions' && (
