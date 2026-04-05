@@ -6,3 +6,4 @@ numpy>=2.0
 Pillow>=11.0
 psutil>=6.0
 pyperclip>=1.9
+requests>=2.32

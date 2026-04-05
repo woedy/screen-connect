@@ -1,0 +1,295 @@
+.browser-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* ---------- Toolbar ---------- */
+.bm-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  z-index: 10;
+}
+
+.bm-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+}
+
+.bm-search-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+}
+
+.bm-search {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  background: var(--sc-bg-secondary);
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-sm);
+  color: var(--sc-text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: all var(--sc-transition);
+}
+
+.bm-search:focus {
+  border-color: var(--sc-accent);
+  box-shadow: 0 0 0 3px var(--sc-accent-glow);
+  background: var(--sc-bg-tertiary);
+}
+
+.bm-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.5;
+  font-size: 14px;
+}
+
+.bm-count {
+  font-size: 13px;
+  color: var(--sc-text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ---------- Grid ---------- */
+.bm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  width: 100%;
+}
+
+/* ---------- Browser Card ---------- */
+.bm-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  border: 1px solid var(--sc-border);
+  transition: all var(--sc-transition);
+  overflow: hidden;
+}
+
+.bm-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--sc-border-hover);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.4);
+}
+
+.bm-card-default {
+  border-color: var(--sc-accent);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.05) 0%, transparent 40%);
+  box-shadow: 0 0 20px -5px var(--sc-accent-glow);
+}
+
+/* ---------- Default Badge ---------- */
+.bm-default-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 4px 10px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  background: rgba(34, 197, 94, 0.1) !important;
+}
+
+/* ---------- Card Header ---------- */
+.bm-card-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.bm-icon-box {
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sc-bg-tertiary);
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  font-size: 28px;
+  box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+}
+
+.bm-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sc-text-primary);
+  margin-top: 4px;
+}
+
+.bm-version-pill {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--sc-text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 4px;
+}
+
+/* ---------- Path Section ---------- */
+.bm-path-section {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--sc-radius-sm);
+  padding: 16px;
+  margin-bottom: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.bm-path-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--sc-text-muted);
+  margin-bottom: 10px;
+  letter-spacing: 0.1em;
+}
+
+.bm-path-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bm-path {
+  flex: 1;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--sc-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* Shows executable end of path */
+  text-align: left;
+  white-space: nowrap;
+}
+
+.bm-copy-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+}
+
+.bm-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 1;
+}
+
+/* ---------- Footer ---------- */
+.bm-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.bm-status-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.tag-primary {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--sc-accent);
+}
+
+.tag-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--sc-text-muted);
+}
+
+.bm-tag-info {
+  font-size: 11px;
+  color: var(--sc-text-muted);
+}
+
+.bm-deep-dive-btn {
+  margin-left: auto;
+  gap: 8px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--sc-accent-light);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  font-weight: 600;
+  padding: 6px 12px;
+  transition: all 0.2s;
+}
+
+.bm-deep-dive-btn:hover {
+  background: var(--sc-accent);
+  color: white;
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px var(--sc-accent-glow);
+}
+
+/* ---------- Loading/Empty ---------- */
+.bm-loading, .bm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 40px;
+  text-align: center;
+  gap: 16px;
+}
+
+.bm-loading p { color: var(--sc-text-secondary); font-size: 14px; }
+
+.bm-empty-icon { font-size: 48px; margin-bottom: 8px; opacity: 0.5; }
+.bm-empty p { color: var(--sc-text-muted); margin-bottom: 12px; }
+
+.btn-loading {
+  position: relative;
+  color: transparent !important;
+}
+
+.btn-loading::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  top: 50%;
+  left: 50%;
+  margin-top: -8px;
+  margin-left: -8px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 768px) {
+  .bm-toolbar { flex-direction: column; align-items: stretch; }
+  .bm-toolbar-left { flex-direction: column; align-items: flex-start; }
+  .bm-search-wrapper { max-width: none; }
+  .bm-grid { grid-template-columns: 1fr; }
+}

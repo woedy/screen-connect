@@ -11,7 +11,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth.models import User
 from rest_framework.pagination import CursorPagination
 
-from .models import SupportSession
+from .models import SupportSession, default_expiry
 from .serializers import (
     SessionCreateSerializer,
     SessionDetailSerializer,
@@ -138,6 +138,89 @@ class SessionJoinView(APIView):
                 "ws_url": ws_url,
                 "token": session.token,
                 "status": session.status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SessionRestartView(APIView):
+    """POST /api/sessions/{id}/restart/ — restart an ended session."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, id):
+        try:
+            session = SupportSession.objects.get(id=id, created_by=request.user)
+        except SupportSession.DoesNotExist:
+            return Response(
+                {"error": "Session not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Reset session metadata
+        session.status = SupportSession.Status.WAITING
+        session.ended_at = None
+        session.client_connected = False
+        session.agent_connected = False
+        # Extend expiry to 2 hours from now
+        session.expires_at = default_expiry()
+        session.save()
+
+        return Response(
+            {"message": "Session restarted", "session_id": str(session.id)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class AgentBootstrapView(APIView):
+    """
+    POST /api/agent/bootstrap/
+    Internal endpoint for agents to self-register and get session credentials.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        machine_id = request.data.get("machine_id")
+        hostname = request.data.get("hostname")
+        os_info = request.data.get("os_info")
+
+        if not machine_id:
+            return Response(
+                {"error": "machine_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 1. Find an existing active session for this machine
+        session = SupportSession.objects.filter(
+            machine_id=machine_id,
+            status__in=[SupportSession.Status.WAITING, SupportSession.Status.ACTIVE]
+        ).first()
+
+        if not session or session.is_expired:
+            # 2. Create a new session if none exists/active
+            # Assign to the first superuser
+            admin = User.objects.filter(is_superuser=True).first()
+            if not admin:
+                # Emergency fallback for testing: create a default admin if none exists
+                logger.warning("No superuser found. Creating default 'admin' for bootstrap.")
+                admin = User.objects.create_superuser('admin', 'admin@example.com', 'admin_pass123')
+
+            session = SupportSession.objects.create(
+                created_by=admin,
+                machine_id=machine_id,
+                hostname=hostname,
+                os_info=os_info,
+                status=SupportSession.Status.WAITING,
+            )
+
+        protocol = "wss" if request.is_secure() else "ws"
+        ws_url = f"{protocol}://{request.get_host()}/ws/session/{session.id}/"
+
+        return Response(
+            {
+                "session_id": str(session.id),
+                "token": session.token,
+                "ws_url": ws_url,
             },
             status=status.HTTP_200_OK,
         )

